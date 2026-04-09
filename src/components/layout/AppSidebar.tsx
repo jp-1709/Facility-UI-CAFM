@@ -9,6 +9,7 @@ const navItems = [
   { icon: BarChart3, label: "Reporting", path: "/reporting" },
   { icon: Inbox, label: "Requests", path: "/requests" },
   { icon: Package, label: "Assets", path: "/assets" },
+  { icon: FileText, label: "Contracts", path: "/contracts" },
   { icon: CalendarDays, label: "Calendar", path: "/calendar" },
   { icon: MessageSquare, label: "Messages", path: "/messages" },
   { icon: Tag, label: "Categories", path: "/categories" },

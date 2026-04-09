@@ -11,6 +11,7 @@ import CalendarView from "@/pages/CalendarView";
 import PlaceholderPage from "@/pages/PlaceholderPage";
 import Requests from "@/pages/Requests";
 import NotFound from "./pages/NotFound";
+import Contracts from "../Contracts";
 
 const queryClient = new QueryClient();
 
@@ -26,6 +27,7 @@ const App = () => (
             <Route path="/reporting" element={<Reporting />} />
             <Route path="/requests" element={<Requests />} />
             <Route path="/assets" element={<Assets />} />
+            <Route path="/contracts" element={<Contracts />} />
             <Route path="/calendar" element={<CalendarView />} />
             <Route path="/messages" element={<PlaceholderPage title="Messages" />} />
             <Route path="/categories" element={<PlaceholderPage title="Categories" />} />
