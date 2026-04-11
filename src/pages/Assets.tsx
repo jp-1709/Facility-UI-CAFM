@@ -395,7 +395,7 @@ function DetailView({ assetName }: { assetName: string }) {
   const { data: a, loading, error } = useFrappeDoc<AssetListItem>("CFAM Asset", assetName);
   const { data: ppms } = useFrappeList<PPMInfo>(
     "PPM Schedule", ["next_run_date", "last_run_date"],
-    assetName ? [["cafm_asset", "=", assetName]] : [], [assetName], !assetName
+    assetName ? [["cfam_asset", "=", assetName]] : [], [assetName], !assetName
   );
   const { data: workOrders } = useFrappeList<WOHistoryItem>(
     "Work Order", ["name", "subject", "status", "scheduled_date", "creation"],
@@ -552,12 +552,12 @@ export default function Assets() {
     tabFilters, [tab]
   );
 
-  const { data: ppms } = useFrappeList<{ cafm_asset: string; last_run_date?: string; next_run_date?: string }>(
-    "PPM Schedule", ["cafm_asset", "last_run_date", "next_run_date"], [], []
+  const { data: ppms } = useFrappeList<{ cfam_asset: string; last_run_date?: string; next_run_date?: string }>(
+    "PPM Schedule", ["cfam_asset", "last_run_date", "next_run_date"], [], []
   );
 
   const ppmMap: Record<string, PPMInfo> = {};
-  ppms.forEach((p) => { if (p.cafm_asset) ppmMap[p.cafm_asset] = p; });
+  ppms.forEach((p) => { if (p.cfam_asset) ppmMap[p.cfam_asset] = p; });
 
   /* search */
   const filtered = assets.filter((a) => {

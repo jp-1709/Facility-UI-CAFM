@@ -853,8 +853,9 @@ export default function Locations() {
   const filtered = (currentList as AnyLoc[]).filter((item) => {
     if (!search) return true;
     const q = search.toLowerCase();
-    const anyItem = item as Record<string, unknown>;
-    return Object.values(anyItem).some((v) => String(v).toLowerCase().includes(q));
+    return [getItemLabel(item), getItemCode(item), getItemSub(item)].some((v) =>
+      v?.toLowerCase().includes(q)
+    );
   });
 
   const getItemLabel = (item: AnyLoc): string => {
@@ -1009,7 +1010,7 @@ export default function Locations() {
                   code={getItemCode(anyItem)}
                   name={getItemLabel(anyItem)}
                   sub={getItemSub(anyItem)}
-                  active={(anyItem as Record<string, unknown>).is_active as (0 | 1)}
+                  active={anyItem.is_active}
                   selected={isSelected && !showNewForm}
                   onClick={() => {
                     setSelected({ level: hierarchyView as LocationLevel, name: anyItem.name, label: getItemLabel(anyItem) });

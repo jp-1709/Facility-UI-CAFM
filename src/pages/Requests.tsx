@@ -11,7 +11,7 @@ import {
   Clock, Mail, Smartphone, MessageSquare, FileText, ChevronRight,
   RefreshCw, AlertCircle, Loader2,
 } from "lucide-react";
-import { Switch } from "@/components/ui/switch";
+import { Switch } from "../components/ui/switch";
 
 /* ═══════════════════════════════════════════
    FRAPPE API HELPERS
@@ -228,6 +228,14 @@ const slaBadge: Record<string, string> = {
 /* ═══════════════════════════════════════════
    HELPER COMPONENTS
 ═══════════════════════════════════════════ */
+
+function generateID(prefix: string) {
+  const now = new Date();
+  const date = now.toISOString().split("T")[0].replace(/-/g, "");
+  const time = now.toTimeString().split(" ")[0].replace(/:/g, "");
+  const rand = Math.floor(Math.random() * 1000).toString().padStart(3, "0");
+  return `${prefix}-${date}-${time}-${rand}`;
+}
 
 function Field({
   label, value, link, badge, badgeClass,
@@ -461,8 +469,9 @@ function NewRequestForm({
     try {
       const payload = {
         ...form,
-        notification_email: form.notification_email ? 1 : 0,
-        notification_sms: form.notification_sms ? 1 : 0,
+        sr_number: generateID("SR"),
+        notification_email: (form.notification_email ? 1 : 0) as 0 | 1,
+        notification_sms: (form.notification_sms ? 1 : 0) as 0 | 1,
         status: "Open",
       };
       const doc = await frappeCreate<SRDetail>("Service Request", payload);

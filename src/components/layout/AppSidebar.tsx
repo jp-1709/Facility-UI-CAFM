@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  LayoutDashboard,
   ClipboardList, BarChart3, MessageSquare, Tag, Package, FileText,
   Gauge, MapPin, Users, Truck, HelpCircle, Inbox, CalendarDays,
   ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen
@@ -13,12 +14,14 @@ import {
 } from "@/components/ui/tooltip";
 
 const navItems = [
+  { icon: LayoutDashboard, label: "Dashboard", path: "/dashboard" },
   { icon: ClipboardList, label: "Work Orders", path: "/" },
   { icon: BarChart3, label: "Reporting", path: "/reporting" },
   { icon: Inbox, label: "Requests", path: "/requests" },
   { icon: Package, label: "Assets", path: "/assets" },
   { icon: FileText, label: "Contracts", path: "/contracts" },
   { icon: CalendarDays, label: "Calendar", path: "/calendar" },
+  { icon: ClipboardList, label: "Scheduler", path: "/scheduler" },
   { icon: MessageSquare, label: "Messages", path: "/messages" },
   { icon: Tag, label: "Categories", path: "/categories" },
   { icon: Package, label: "Parts Inventory", path: "/parts" },

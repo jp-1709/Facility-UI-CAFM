@@ -15,6 +15,9 @@ import NotFound from "./pages/NotFound";
 import Contracts from "@/pages/Contracts";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import Dashboard from "./pages/Dashboard";
+import Locations from "@/pages/Locations";
+import Scheduler from "@/pages/Scheduler";
 
 const queryClient = new QueryClient();
 
@@ -29,6 +32,7 @@ const AppRoutes = () => {
           </ProtectedRoute>
         }
       >
+        <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/" element={<WorkOrders />} />
         <Route path="/reporting" element={<Reporting />} />
         <Route path="/requests" element={<Requests />} />
@@ -40,7 +44,8 @@ const AppRoutes = () => {
         <Route path="/parts" element={<PlaceholderPage title="Parts Inventory" />} />
         <Route path="/procedures" element={<PlaceholderPage title="Procedure Library" />} />
         <Route path="/meters" element={<PlaceholderPage title="Meters" />} />
-        <Route path="/locations" element={<PlaceholderPage title="Locations" />} />
+        <Route path="/locations" element={<Locations />} />
+        <Route path="/scheduler" element={<Scheduler />} />
         <Route path="/teams" element={<PlaceholderPage title="Teams / Users" />} />
         <Route path="/vendors" element={<PlaceholderPage title="Vendors" />} />
       </Route>

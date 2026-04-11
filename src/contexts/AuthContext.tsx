@@ -23,7 +23,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // Check authentication status on app load
   useEffect(() => {
     auth.checkAuth();
-  }, [auth.checkAuth]);
+  }, []);
 
   return (
     <AuthContext.Provider value={auth}>

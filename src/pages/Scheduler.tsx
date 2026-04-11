@@ -1,26 +1,26 @@
 /**
- * Scheduler.tsx
- * Facility-UI — Technician Scheduler (Gantt Dispatch View)
- * Dark-themed Gantt grid. Week view with work orders per technician per day.
- * Data fetched from Frappe (PPM Schedule + Work Order + Technician).
- * WO card click opens detail modal with SLA metrics.
+ * Scheduler.tsx  –  Facility-UI  –  Technician Scheduler
+ * Light theme matching the rest of the app.
+ * Three views: Gantt (week), Month calendar, Agenda.
+ * Dynamic data from Frappe: PPM Schedule + Work Orders + Service Requests.
+ * WO / PPM card click → SLA + checklist detail modal.
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
-  ChevronLeft, ChevronRight, Plus, Search, Bell, HelpCircle,
-  X, CheckCircle2, XCircle, AlertTriangle, Clock, Menu,
-  ChevronDown, Calendar as CalIcon, Loader2,
+  ChevronLeft, ChevronRight, Plus, Search, X, CheckCircle2,
+  XCircle, AlertTriangle, Clock, ChevronDown, Loader2,
+  Filter, User, MapPin, RefreshCw, Calendar, List,
+  LayoutGrid, Bell, Shield,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════
    FRAPPE API
 ═══════════════════════════════════════════ */
-
 const FRAPPE_BASE = "";
-type FF = [string, string, string | number][];
+type FF = [string, string, string | number | string[]][];
 
-async function frappeGet<T>(doctype: string, fields: string[], filters: FF = [], limit = 200): Promise<T[]> {
+async function frappeGet<T>(doctype: string, fields: string[], filters: FF = [], limit = 300): Promise<T[]> {
   const params = new URLSearchParams({
     fields: JSON.stringify(fields),
     filters: JSON.stringify(filters),
@@ -31,258 +31,298 @@ async function frappeGet<T>(doctype: string, fields: string[], filters: FF = [],
   return (await res.json()).data as T[];
 }
 
+async function frappeUpdate<T>(doctype: string, name: string, payload: Partial<T>): Promise<T> {
+  const res = await fetch(`${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`, {
+    method: "PUT", credentials: "include",
+    headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || "" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Update failed");
+  return (await res.json()).data as T;
+}
+
+function useFetch<T>(doctype: string, fields: string[], filters: FF, deps: unknown[]) {
+  const [data, setData] = useState<T[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fetch_ = useCallback(async () => {
+    setLoading(true); setError(null);
+    try { setData(await frappeGet<T>(doctype, fields, filters)); }
+    catch (e: unknown) { setError((e as Error).message); }
+    finally { setLoading(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  useEffect(() => { fetch_(); }, [fetch_]);
+  return { data, loading, error, refetch: fetch_ };
+}
+
 /* ═══════════════════════════════════════════
    TYPES
 ═══════════════════════════════════════════ */
-
-interface Technician {
-  name: string; technician_name?: string; full_name?: string;
-  role?: string; capacity_hours?: number; status?: string;
-  avatar_color?: string;
-}
-
-interface WorkOrder {
-  name: string; subject?: string; description?: string;
-  status: string; priority?: string;
-  scheduled_date?: string; start_time?: string;
-  estimated_hours?: number;
-  assigned_to?: string; technician?: string;
-  property?: string; location?: string;
-  asset?: string; asset_name?: string;
-}
-
+interface Resource { name: string; resource_name: string; designation?: string; is_active?: boolean; }
 interface PPMSchedule {
-  name: string; schedule_name: string; ppm_id?: string;
-  status: string; frequency: string;
-  next_run_date: string; last_run_date?: string;
-  assigned_technician?: string; assigned_to?: string;
-  property?: string; property_name?: string;
-  asset_code?: string; asset_name?: string;
-  service_category?: string; service_group?: string;
-  planned_duration?: number; overdue_days?: number;
-  client_name?: string; contract_code?: string;
+  name: string; pm_id: string; pm_title: string; pm_type?: string; frequency?: string; status: string;
+  asset_code?: string; asset_name?: string; asset_category?: string; service_group?: string;
+  property_code?: string; property_name?: string; zone_code?: string; sub_zone_code?: string;
+  client_code?: string; client_name?: string; contract_code?: string; contract_group?: string;
+  last_done_date?: string; next_due_date: string; overdue_by_days?: number;
+  assigned_to?: string; assigned_technician?: string; ppm_wo_number?: string;
+  planned_duration_hrs?: number; estimated_spares?: number; checklist_reference?: string; notes?: string;
 }
-
-interface SRUnassigned {
-  name: string; sr_title?: string; subject?: string;
-  fault_category?: string; property_name?: string; property_code?: string;
-  reported_by?: string; contact_phone?: string;
-  priority_actual?: string; raised_date?: string; raised_time?: string;
-  status: string; wo_source?: string;
+interface WorkOrder {
+  name: string; wo_number?: string; wo_title: string; wo_type?: string; status: string; actual_priority?: string;
+  assigned_to?: string; assigned_technician?: string;
+  schedule_start_date?: string; schedule_start_time?: string; schedule_end_time?: string; planned_duration_min?: number;
+  property_code?: string; property_name?: string; asset_code?: string; asset_name?: string;
+  service_group?: string; fault_category?: string; client_code?: string; client_name?: string;
+  response_sla_target?: string; response_sla_actual?: string; response_sla_breach?: 0 | 1;
+  resolution_sla_target?: string; resolution_sla_actual?: string; resolution_sla_breach?: 0 | 1;
+  work_done_notes?: string;
 }
+interface ServiceRequest {
+  name: string; sr_title?: string; fault_category?: string;
+  property_name?: string; property_code?: string; reported_by?: string;
+  priority_actual?: string; raised_date?: string; raised_time?: string; status: string;
+}
+type ScheduleItem = PPMSchedule | WorkOrder;
 
 /* ═══════════════════════════════════════════
-   WEEK HELPERS
+   DATE HELPERS
 ═══════════════════════════════════════════ */
-
 function getWeekStart(d: Date): Date {
-  const s = new Date(d);
-  const day = s.getDay(); // 0=Sun
-  const diff = day === 0 ? -6 : 1 - day; // Monday-based
-  s.setDate(s.getDate() + diff);
-  s.setHours(0, 0, 0, 0);
-  return s;
+  const s = new Date(d); const day = s.getDay();
+  s.setDate(s.getDate() - (day === 0 ? 6 : day - 1)); s.setHours(0, 0, 0, 0); return s;
 }
-
-function addDays(d: Date, n: number): Date {
-  const r = new Date(d);
-  r.setDate(r.getDate() + n);
-  return r;
-}
-
-const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-function fmtDay(d: Date): string {
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-}
-
+function addDays(d: Date, n: number): Date { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
 function dateKey(d: Date): string { return d.toISOString().split("T")[0]; }
+function isToday(d: Date): boolean { const t = new Date(); return d.getDate() === t.getDate() && d.getMonth() === t.getMonth() && d.getFullYear() === t.getFullYear(); }
+function fmtShort(d: Date): string { return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }); }
+function formatDate(d?: string): string { if (!d) return "—"; return new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }); }
+const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-function isToday(d: Date): boolean {
-  const t = new Date();
-  return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate();
-}
+/* item accessors */
+function itemDate(it: ScheduleItem): string { return (it as PPMSchedule).next_due_date || (it as WorkOrder).schedule_start_date || ""; }
+function itemTitle(it: ScheduleItem): string { return (it as PPMSchedule).pm_title || (it as WorkOrder).wo_title || it.name; }
+function itemTime(it: ScheduleItem): string { return ((it as WorkOrder).schedule_start_time || "").slice(0, 5); }
+function itemTechKey(it: ScheduleItem): string { return (it as PPMSchedule).assigned_to || (it as WorkOrder).assigned_to || ""; }
+function itemTechName(it: ScheduleItem): string { return (it as PPMSchedule).assigned_technician || (it as WorkOrder).assigned_technician || ""; }
+function isPPM(it: ScheduleItem): it is PPMSchedule { return !!(it as PPMSchedule).pm_id; }
 
 /* ═══════════════════════════════════════════
-   COLOUR PALETTE — per technician (cycles)
+   COLOUR SYSTEM
 ═══════════════════════════════════════════ */
-
-const TECH_COLORS = [
-  { bg: "bg-[#22c4a0]", border: "border-[#1aab8b]", text: "text-[#022b24]", avatar: "bg-[#22c4a0]" },
-  { bg: "bg-[#a855f7]", border: "border-[#9333ea]", text: "text-white",      avatar: "bg-[#a855f7]" },
-  { bg: "bg-[#f59e0b]", border: "border-[#d97706]", text: "text-[#1c1009]",  avatar: "bg-[#f59e0b]" },
-  { bg: "bg-[#ec4899]", border: "border-[#db2777]", text: "text-white",      avatar: "bg-[#ec4899]" },
-  { bg: "bg-[#22d3ee]", border: "border-[#06b6d4]", text: "text-[#042428]",  avatar: "bg-[#22d3ee]" },
-  { bg: "bg-[#84cc16]", border: "border-[#65a30d]", text: "text-[#0f1a02]",  avatar: "bg-[#84cc16]" },
+const RES_PALETTE = [
+  { card: "bg-[#06b6d4] text-white", dot: "bg-[#06b6d4]" },
+  { card: "bg-[#8b5cf6] text-white", dot: "bg-[#8b5cf6]" },
+  { card: "bg-[#f59e0b] text-black", dot: "bg-[#f59e0b]" },
+  { card: "bg-[#ec4899] text-white", dot: "bg-[#ec4899]" },
+  { card: "bg-[#22c55e] text-white", dot: "bg-[#22c55e]" },
+  { card: "bg-[#f97316] text-white", dot: "bg-[#f97316]" },
+  { card: "bg-[#3b82f6] text-white", dot: "bg-[#3b82f6]" },
+  { card: "bg-[#ef4444] text-white", dot: "bg-[#ef4444]" },
 ];
+function pal(i: number) { return RES_PALETTE[i % RES_PALETTE.length]; }
 
-function techColor(idx: number) { return TECH_COLORS[idx % TECH_COLORS.length]; }
+const CAT_MAP: [string[], string][] = [
+  [["Preventive", "PPM", "Planned"], "bg-[#6366f1] text-white"],
+  [["Clean"], "bg-[#06b6d4] text-white"],
+  [["Inspect", "Fire"], "bg-[#f97316] text-white"],
+  [["Security", "CCTV", "Access"], "bg-[#ec4899] text-white"],
+  [["IT", "BMS", "Server"], "bg-[#8b5cf6] text-white"],
+  [["Pest"], "bg-[#ef4444] text-white"],
+  [["Garden", "Landscape"], "bg-[#84cc16] text-black"],
+  [["Elevator", "Lift"], "bg-[#6366f1] text-white"],
+  [["HVAC", "Chiller", "AHU"], "bg-[#0ea5e9] text-white"],
+  [["Plumb", "Water", "Pump"], "bg-[#3b82f6] text-white"],
+  [["Electr", "DB", "Panel", "Generator"], "bg-[#f59e0b] text-black"],
+];
+function catCls(it: ScheduleItem): string {
+  const key = `${isPPM(it) ? it.pm_type : ""} ${isPPM(it) ? it.frequency : ""} ${isPPM(it) ? it.service_group : (it as WorkOrder).service_group || ""} ${itemTitle(it)}`;
+  for (const [words, cls] of CAT_MAP) if (words.some(w => key.includes(w))) return cls;
+  return "bg-[#64748b] text-white";
+}
+function catDot(it: ScheduleItem): string { return catCls(it).split(" ")[0].replace("bg-", "bg-"); }
 
 const PRIORITY_CFG: Record<string, { bg: string; text: string; label: string }> = {
-  "P1 - Critical": { bg: "bg-red-500",    text: "text-white",       label: "P1 – Urgent"  },
-  "P2 - High":     { bg: "bg-orange-500", text: "text-white",       label: "P2 – Urgent"  },
-  "P3 - Medium":   { bg: "bg-blue-500",   text: "text-white",       label: "P3"           },
-  "P4 - Low":      { bg: "bg-gray-500",   text: "text-white",       label: "P4"           },
+  "P1 - Critical": { bg: "bg-red-500", text: "text-white", label: "P1 – Urgent" },
+  "P2 - High": { bg: "bg-orange-500", text: "text-white", label: "P2 – Urgent" },
+  "P3 - Medium": { bg: "bg-blue-500", text: "text-white", label: "P3" },
+  "P4 - Low": { bg: "bg-gray-400", text: "text-white", label: "P4" },
 };
-
-const WO_STATUS_CFG: Record<string, { bg: string; text: string }> = {
-  Open:         { bg: "bg-emerald-600",   text: "text-white" },
-  "In Progress":{ bg: "bg-blue-600",      text: "text-white" },
-  Completed:    { bg: "bg-gray-600",      text: "text-white" },
-  Cancelled:    { bg: "bg-red-700",       text: "text-white" },
+const STATUS_CLS: Record<string, string> = {
+  Open: "bg-sky-100 text-sky-700", "In Progress": "bg-blue-100 text-blue-700",
+  Completed: "bg-emerald-100 text-emerald-700", Scheduled: "bg-violet-100 text-violet-700",
+  Overdue: "bg-red-100 text-red-700", Cancelled: "bg-gray-100 text-gray-500", Deferred: "bg-amber-100 text-amber-700",
 };
 
 /* ═══════════════════════════════════════════
-   WORK ORDER DETAIL MODAL (Image 4)
+   MICRO COMPONENTS
 ═══════════════════════════════════════════ */
-
-interface WOModalProps {
-  wo: WorkOrder;
-  onClose: () => void;
+function Spin() { return <div className="flex items-center justify-center py-10"><Loader2 className="w-5 h-5 animate-spin text-primary" /></div>; }
+function ErrMsg({ msg }: { msg: string }) {
+  return <div className="flex items-center gap-2 m-3 px-3 py-2 bg-destructive/10 border border-destructive/20 rounded-lg text-sm text-destructive"><AlertTriangle className="w-4 h-4 shrink-0" />{msg}</div>;
+}
+function Avatar({ name, size = "sm", ci }: { name?: string; size?: "sm" | "md" | "lg"; ci?: number }) {
+  const initials = (name || "?").split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
+  const colors = ["bg-cyan-500", "bg-violet-500", "bg-amber-500", "bg-pink-500", "bg-green-500", "bg-orange-500", "bg-blue-500", "bg-red-500"];
+  const c = ci !== undefined ? colors[ci % colors.length] : colors[(initials.charCodeAt(0) || 0) % colors.length];
+  const sz = size === "lg" ? "w-10 h-10 text-sm" : size === "md" ? "w-8 h-8 text-xs" : "w-7 h-7 text-[11px]";
+  return <div className={`${sz} rounded-full ${c} flex items-center justify-center text-white font-bold shrink-0`}>{initials}</div>;
 }
 
-function WODetailModal({ wo, onClose }: WOModalProps) {
-  const pc = PRIORITY_CFG[wo.priority || ""] || PRIORITY_CFG["P3 - Medium"];
-  const sc = WO_STATUS_CFG[wo.status] || WO_STATUS_CFG["Open"];
+/* ═══════════════════════════════════════════
+   DETAIL MODAL
+═══════════════════════════════════════════ */
+function DetailModal({ item, onClose, onStatusChange }: { item: ScheduleItem; onClose: () => void; onStatusChange: () => void }) {
+  const ppm_ = isPPM(item);
+  const wo = item as WorkOrder;
+  const ppm = item as PPMSchedule;
+  const [localStatus, setLocalStatus] = useState(item.status);
+  const [updating, setUpdating] = useState(false);
+  const [checks, setChecks] = useState([true, true, true, false, false]);
+  const checkItems = ["Filter condition checked", "Coil visual inspection", "Refrigerant pressure logged", "Belt tension verified", "Drain pan cleaned"];
+  const pc = wo.actual_priority ? PRIORITY_CFG[wo.actual_priority] : null;
+  const statusFlow = ppm_ ? ["Scheduled", "In Progress", "Completed", "Overdue"] : ["Open", "In Progress", "Completed", "Closed"];
 
-  const timeline = [
-    { time: "09:00", label: "Request raised — SLA clock started",    color: "border-gray-500" },
-    { time: "10:00", label: "First response by " + (wo.assigned_to || "Technician"), color: "border-emerald-500" },
-    { time: "11:00", label: `Work Order created: ${wo.name}`,         color: "border-violet-500" },
-    { time: "12:00", label: "On-site assessment completed — work started", color: "border-amber-500" },
-  ];
-
-  const checklistItems = [
-    { done: true,  label: "Filter condition checked" },
-    { done: true,  label: "Coil visual inspection" },
-    { done: true,  label: "Refrigerant pressure logged" },
-    { done: false, label: "Belt tension verified" },
-    { done: false, label: "Drain pan cleaned" },
-  ];
+  async function changeStatus(s: string) {
+    if (s === localStatus) return;
+    setUpdating(true);
+    try { await frappeUpdate(ppm_ ? "PPM Schedule" : "Work Orders", item.name, { status: s }); setLocalStatus(s); onStatusChange(); }
+    catch { /* silent */ }
+    finally { setUpdating(false); }
+  }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-[#0f1117] border border-[#2a2d3a] rounded-2xl shadow-2xl fade-in">
-        {/* modal header */}
-        <div className="px-7 pt-6 pb-4 border-b border-[#2a2d3a]">
-          <div className="flex items-center gap-3 mb-2">
-            <span className="text-sm font-bold text-blue-400">{wo.name}</span>
-            <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${pc.bg} ${pc.text}`}>{pc.label}</span>
-            <span className={`px-2.5 py-0.5 rounded text-xs font-bold ${sc.bg} ${sc.text}`}>{wo.status}</span>
-            <button onClick={onClose} className="ml-auto p-1 hover:bg-white/10 rounded-lg transition-colors">
-              <X className="w-5 h-5 text-gray-400" />
-            </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+      <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-card border border-border rounded-2xl shadow-2xl fade-in">
+        {/* header */}
+        <div className="px-7 pt-6 pb-4 border-b border-border">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2.5 mb-1.5 flex-wrap">
+                <span className="text-sm font-bold text-primary font-mono">{ppm_ ? ppm.pm_id : (wo.wo_number || wo.name)}</span>
+                {pc && <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${pc.bg} ${pc.text}`}>{pc.label}</span>}
+                <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_CLS[localStatus] || "bg-muted text-muted-foreground"}`}>{localStatus}</span>
+              </div>
+              <h2 className="text-xl font-bold text-foreground">{itemTitle(item)}</h2>
+              <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground flex-wrap">
+                {(ppm_ ? ppm.property_name : wo.property_name) && <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{ppm_ ? ppm.property_name : wo.property_name}</span>}
+                {itemTime(item) && <span className="flex items-center gap-1"><Clock className="w-3 h-3" />Scheduled: {itemTime(item)}</span>}
+              </div>
+            </div>
+            <button onClick={onClose} className="p-1.5 hover:bg-muted rounded-lg transition-colors shrink-0"><X className="w-5 h-5 text-muted-foreground" /></button>
           </div>
-          <h2 className="text-xl font-bold text-white">{wo.subject || wo.description || "Work Order"}</h2>
-          <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
-            {wo.location && <span className="flex items-center gap-1">📍 {wo.location}</span>}
-            {wo.start_time && <span className="flex items-center gap-1">🕐 Raised: {wo.start_time}</span>}
+          {/* status bar */}
+          <div className="mt-4">
+            <p className="text-xs text-muted-foreground mb-2 font-medium">Status <span className="italic">(Click to Update)</span></p>
+            <div className="flex items-center gap-2">
+              {updating ? <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" />Updating…</div>
+                : statusFlow.map(s => (
+                  <button key={s} onClick={() => changeStatus(s)}
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold border-2 transition-all ${localStatus === s ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:border-primary/40"}`}>
+                    {s}
+                  </button>
+                ))}
+            </div>
           </div>
         </div>
 
         <div className="px-7 py-5 grid grid-cols-2 gap-8">
-          {/* LEFT — description + timeline */}
+          {/* LEFT */}
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Description</p>
-            <div className="bg-[#1a1d27] rounded-lg p-3 text-sm text-gray-300 leading-relaxed mb-5">
-              {wo.description || "Quarterly chiller PPM — refrigerant check, oil levels, belts"}
+            <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground mb-2">Description</p>
+            <div className="bg-muted/40 rounded-lg p-3 text-sm text-foreground leading-relaxed mb-5 min-h-[60px]">
+              {(ppm_ ? ppm.notes : wo.work_done_notes) || "No description provided."}
             </div>
-
             <div className="grid grid-cols-2 gap-3 mb-5">
-              <div className="bg-[#1a1d27] rounded-lg p-3">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Raised</p>
-                <p className="text-sm font-semibold text-white">{wo.scheduled_date ? new Date(wo.scheduled_date).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—"} {wo.start_time || "09:00"}</p>
+              <div className="bg-muted/40 rounded-lg p-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">{ppm_ ? "Next Due" : "Scheduled"}</p>
+                <p className="text-sm font-semibold text-foreground">{formatDate(itemDate(item))}</p>
               </div>
-              <div className="bg-[#1a1d27] rounded-lg p-3">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Assignee</p>
-                <p className="text-sm font-semibold text-white">{wo.assigned_to || wo.technician || "—"}</p>
+              <div className="bg-muted/40 rounded-lg p-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">Assignee</p>
+                <p className="text-sm font-semibold text-foreground">{itemTechName(item) || "Unassigned"}</p>
               </div>
             </div>
-
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-3">Activity Timeline</p>
-            <div className="flex flex-col gap-0">
-              {timeline.map((t, i) => (
-                <div key={i} className="flex gap-3 items-start">
-                  <div className="flex flex-col items-center">
-                    <div className={`w-4 h-4 rounded-full border-2 ${t.color} bg-[#0f1117] mt-0.5 shrink-0`} />
-                    {i < timeline.length - 1 && <div className="w-px h-7 bg-[#2a2d3a]" />}
+            {ppm_ ? (
+              <div className="space-y-0">
+                <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground mb-2">PPM Details</p>
+                {([["PM Type", ppm.pm_type], ["Frequency", ppm.frequency], ["Asset", ppm.asset_name || ppm.asset_code], ["Category", ppm.asset_category], ["Service Group", ppm.service_group], ["Checklist", ppm.checklist_reference], ["Duration", ppm.planned_duration_hrs ? `${ppm.planned_duration_hrs} hrs` : "—"], ["Est. Spares", ppm.estimated_spares ? `OMR ${ppm.estimated_spares.toLocaleString()}` : "—"], ["Contract", ppm.contract_code], ["Client", ppm.client_name || ppm.client_code], ["Last Done", formatDate(ppm.last_done_date)], ["Overdue By", ppm.overdue_by_days ? `${ppm.overdue_by_days} days` : "—"], ["Generated WO", ppm.ppm_wo_number || "—"]] as [string, string | undefined][]).map(([l, v]) => (
+                  <div key={l} className="flex justify-between py-2 border-b border-border last:border-0 text-sm">
+                    <span className="text-muted-foreground text-xs font-medium w-28 shrink-0">{l}</span>
+                    <span className={`font-medium text-right text-sm ${l === "Overdue By" && ppm.overdue_by_days ? "text-red-500" : "text-foreground"}`}>{v || "—"}</span>
                   </div>
-                  <div className="pb-4">
-                    <p className="text-[11px] text-gray-500">Today {t.time}</p>
-                    <p className="text-xs text-gray-300">{t.label}</p>
+                ))}
+              </div>
+            ) : (
+              <>
+                <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground mb-2">Activity Timeline</p>
+                {[{ t: "09:00", l: "Request raised — SLA clock started", c: "border-gray-400" }, { t: "10:00", l: `First response by ${wo.assigned_technician || "Technician"}`, c: "border-emerald-500" }, { t: "11:00", l: `Work Order: ${wo.wo_number || wo.name}`, c: "border-violet-500" }, { t: "12:00", l: "On-site assessment — work started", c: "border-amber-500" }].map((ev, i, arr) => (
+                  <div key={i} className="flex gap-3 items-start">
+                    <div className="flex flex-col items-center">
+                      <div className={`w-4 h-4 rounded-full border-2 ${ev.c} bg-card mt-0.5 shrink-0`} />
+                      {i < arr.length - 1 && <div className="w-px h-7 bg-border" />}
+                    </div>
+                    <div className="pb-3"><p className="text-[11px] text-muted-foreground">Today {ev.t}</p><p className="text-xs text-foreground">{ev.l}</p></div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </>
+            )}
           </div>
 
-          {/* RIGHT — SLA + checklist */}
+          {/* RIGHT */}
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-3">SLA Metrix Panel</p>
-
-            {/* First Response */}
-            <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-xl p-4 mb-3">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">First Response</p>
-              <div className="flex items-center gap-2 mb-3">
-                <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-                <span className="text-base font-bold text-emerald-400">Met</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 mb-2">
-                <div className="bg-[#0f1117] rounded-lg p-2.5">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Target</p>
-                  <p className="text-sm font-bold text-white">2 hrs</p>
-                </div>
-                <div className="bg-[#0f1117] rounded-lg p-2.5">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Actual</p>
-                  <p className="text-sm font-bold text-white">42 min</p>
-                </div>
-              </div>
-              <span className="text-xs font-semibold text-emerald-400">✓ 1hr 18min early</span>
-            </div>
-
-            {/* Resolution */}
-            <div className="bg-[#2a1a1a] border border-red-900/40 rounded-xl p-4 mb-3">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">Resolution</p>
-              <div className="flex items-center gap-2 mb-3">
-                <XCircle className="w-5 h-5 text-red-500" />
-                <span className="text-base font-bold text-red-400">Breach</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 mb-2">
-                <div className="bg-[#0f1117] rounded-lg p-2.5">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Target</p>
-                  <p className="text-sm font-bold text-white">6 hrs</p>
-                </div>
-                <div className="bg-[#0f1117] rounded-lg p-2.5">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Actual</p>
-                  <p className="text-sm font-bold text-white">18hr 45min</p>
-                </div>
-              </div>
-              <span className="flex items-center gap-1 text-xs font-semibold text-red-400 bg-red-900/30 rounded-full px-2.5 py-0.5 w-fit">
-                <AlertTriangle className="w-3 h-3" /> 12hr 45min overdue
-              </span>
-            </div>
-
-            {/* Score */}
-            <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-xl p-4 mb-4">
-              <p className="text-xs font-semibold text-gray-400 mb-3">Gold SLA — 2hr Response / 6hr Resolution</p>
-              <div className="grid grid-cols-3 gap-2 text-center">
-                <div><p className="text-2xl font-bold text-red-400">1</p><p className="text-[10px] text-gray-500">Met</p></div>
-                <div><p className="text-2xl font-bold text-red-400">1</p><p className="text-[10px] text-gray-500">Breach</p></div>
-                <div><p className="text-2xl font-bold text-emerald-400">50%</p><p className="text-[10px] text-gray-500">Score</p></div>
-              </div>
-            </div>
-
-            {/* Checklist */}
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Checklist Items</p>
-            <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-xl p-3 flex flex-col gap-2">
-              {checklistItems.map((item, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0
-                    ${item.done ? "bg-blue-600 border-blue-600" : "border-gray-600 bg-transparent"}`}>
-                    {item.done && <CheckCircle2 className="w-3 h-3 text-white" />}
+            {!ppm_ && (
+              <>
+                <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground mb-2">SLA Metrics</p>
+                {/* Response */}
+                <div className={`border rounded-xl p-4 mb-3 ${wo.response_sla_breach ? "border-red-200 bg-red-50" : "border-emerald-200 bg-emerald-50"}`}>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">First Response</p>
+                  <div className="flex items-center gap-2 mb-3">
+                    {wo.response_sla_breach ? <><XCircle className="w-5 h-5 text-red-500" /><span className="font-bold text-red-600">Breach</span></> : <><CheckCircle2 className="w-5 h-5 text-emerald-500" /><span className="font-bold text-emerald-600">Met</span></>}
                   </div>
-                  <span className={`text-xs ${item.done ? "text-gray-300" : "text-gray-500"}`}>{item.label}</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[["Target", formatDate(wo.response_sla_target)], ["Actual", formatDate(wo.response_sla_actual) || "Pending"]].map(([l, v]) => (
+                      <div key={l} className="bg-white rounded-lg p-2.5 border border-border"><p className="text-[10px] text-muted-foreground uppercase mb-1">{l}</p><p className="text-sm font-bold text-foreground">{v}</p></div>
+                    ))}
+                  </div>
                 </div>
+                {/* Resolution */}
+                <div className={`border rounded-xl p-4 mb-3 ${wo.resolution_sla_breach ? "border-red-200 bg-red-50" : "border-border bg-muted/30"}`}>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Resolution</p>
+                  <div className="flex items-center gap-2 mb-3">
+                    {wo.resolution_sla_breach ? <><XCircle className="w-5 h-5 text-red-500" /><span className="font-bold text-red-600">Breach</span></> : <><CheckCircle2 className="w-5 h-5 text-emerald-500" /><span className="font-bold text-emerald-600">Met</span></>}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    {[["Target", formatDate(wo.resolution_sla_target)], ["Actual", formatDate(wo.resolution_sla_actual) || "Pending"]].map(([l, v]) => (
+                      <div key={l} className="bg-white rounded-lg p-2.5 border border-border"><p className="text-[10px] text-muted-foreground uppercase mb-1">{l}</p><p className="text-sm font-bold text-foreground">{v}</p></div>
+                    ))}
+                  </div>
+                  {wo.resolution_sla_breach && <span className="flex items-center gap-1 text-xs font-semibold text-red-500 bg-red-100 rounded-full px-2.5 py-0.5 w-fit"><AlertTriangle className="w-3 h-3" />Overdue</span>}
+                </div>
+                {/* Score */}
+                <div className="bg-muted/50 border border-border rounded-xl p-4 mb-4">
+                  <p className="text-xs font-semibold text-muted-foreground mb-2">SLA Score</p>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div><p className="text-xl font-bold text-foreground">{wo.response_sla_breach ? 0 : 1}</p><p className="text-[10px] text-muted-foreground">Response</p></div>
+                    <div><p className="text-xl font-bold text-foreground">{wo.resolution_sla_breach ? 0 : 1}</p><p className="text-[10px] text-muted-foreground">Resolution</p></div>
+                    <div><p className={`text-xl font-bold ${!wo.response_sla_breach && !wo.resolution_sla_breach ? "text-emerald-600" : wo.response_sla_breach && wo.resolution_sla_breach ? "text-red-500" : "text-amber-600"}`}>
+                      {!wo.response_sla_breach && !wo.resolution_sla_breach ? "100%" : wo.response_sla_breach && wo.resolution_sla_breach ? "0%" : "50%"}
+                    </p><p className="text-[10px] text-muted-foreground">Score</p></div>
+                  </div>
+                </div>
+              </>
+            )}
+            <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground mb-2">Checklist Items</p>
+            <div className="bg-muted/30 border border-border rounded-xl p-3 flex flex-col gap-2">
+              {checkItems.map((ci, i) => (
+                <button key={i} onClick={() => setChecks(c => c.map((v, j) => j === i ? !v : v))} className="flex items-center gap-2 text-left w-full hover:bg-muted/50 rounded-lg px-1 py-0.5 transition-colors">
+                  <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-all ${checks[i] ? "bg-primary border-primary" : "border-border"}`}>
+                    {checks[i] && <CheckCircle2 className="w-3 h-3 text-primary-foreground" />}
+                  </div>
+                  <span className={`text-xs ${checks[i] ? "line-through text-muted-foreground" : "text-foreground"}`}>{ci}</span>
+                </button>
               ))}
             </div>
           </div>
@@ -293,381 +333,400 @@ function WODetailModal({ wo, onClose }: WOModalProps) {
 }
 
 /* ═══════════════════════════════════════════
-   WORK ORDER CARD (in Gantt cell)
+   GANTT WEEK VIEW
 ═══════════════════════════════════════════ */
+function GanttView({ resources, items, weekAnchor, onItemClick }: { resources: Resource[]; items: ScheduleItem[]; weekAnchor: Date; onItemClick: (it: ScheduleItem) => void }) {
+  const days = Array.from({ length: 7 }, (_, i) => addDays(weekAnchor, i));
+  const grid: Record<string, Record<string, ScheduleItem[]>> = {};
+  items.forEach(it => { const tk = itemTechKey(it) || "__unassigned"; const dk = itemDate(it); if (!grid[tk]) grid[tk] = {}; if (!grid[tk][dk]) grid[tk][dk] = []; grid[tk][dk].push(it); });
 
-function WOCard({
-  wo, colorCfg, onClick,
-}: { wo: WorkOrder; colorCfg: (typeof TECH_COLORS)[0]; onClick: () => void }) {
+  function cellHours(tk: string, dk: string, cap: number) {
+    const its = grid[tk]?.[dk] || [];
+    const used = its.reduce((s, it) => { const h = (it as PPMSchedule).planned_duration_hrs || ((it as WorkOrder).planned_duration_min ? (it as WorkOrder).planned_duration_min! / 60 : 1.5); return s + h; }, 0);
+    return { used, pct: Math.min(100, Math.round((used / cap) * 100)), over: used > cap };
+  }
+
   return (
-    <button onClick={onClick}
-      className={`w-full text-left rounded-lg p-2 mb-1 last:mb-0 ${colorCfg.bg} hover:opacity-90 transition-opacity`}>
-      {wo.start_time && (
-        <p className={`text-[10px] font-bold ${colorCfg.text} opacity-80`}>{wo.start_time}</p>
-      )}
-      <p className={`text-[11px] font-bold ${colorCfg.text}`}>{wo.name}</p>
-      <p className={`text-[11px] ${colorCfg.text} opacity-90 truncate leading-tight`}>{wo.subject || wo.description}</p>
-    </button>
-  );
-}
-
-/* PPM card */
-function PPMCard({ ppm, colorCfg, onClick }: { ppm: PPMSchedule; colorCfg: (typeof TECH_COLORS)[0]; onClick: () => void }) {
-  return (
-    <button onClick={onClick}
-      className={`w-full text-left rounded-lg p-2 mb-1 last:mb-0 ${colorCfg.bg} hover:opacity-90 transition-opacity`}>
-      <p className={`text-[11px] font-bold ${colorCfg.text}`}>{ppm.ppm_id || ppm.name}</p>
-      <p className={`text-[11px] ${colorCfg.text} opacity-90 truncate`}>{ppm.schedule_name}</p>
-    </button>
-  );
-}
-
-/* ═══════════════════════════════════════════
-   CAPACITY BAR
-═══════════════════════════════════════════ */
-
-function CapacityBar({ used, total, isOverloaded }: { used: number; total: number; isOverloaded: boolean }) {
-  const pct = Math.min(100, Math.round((used / total) * 100));
-  return (
-    <div className="flex items-center justify-between px-2 py-1 border-b border-[#2a2d3a]">
-      <span className={`text-[10px] font-semibold ${isOverloaded ? "text-red-400" : "text-gray-400"}`}>
-        {used}/{total}h
-      </span>
-      <div className="flex-1 mx-2 h-1.5 bg-[#2a2d3a] rounded-full overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all ${isOverloaded ? "bg-red-500" : pct > 75 ? "bg-amber-500" : "bg-blue-500"}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span className={`text-[10px] font-semibold ${isOverloaded ? "text-red-400" : "text-gray-400"}`}>
-        {pct}%{isOverloaded && " ▲"}
-      </span>
+    <div className="overflow-auto flex-1">
+      <table className="w-full border-collapse" style={{ minWidth: "1100px" }}>
+        <thead className="sticky top-0 z-20 bg-card">
+          <tr className="border-b border-border">
+            <th className="w-[190px] min-w-[190px] px-4 py-3 text-left border-r border-border">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Technician / Capacity</span>
+            </th>
+            {days.map((day, i) => (
+              <th key={i} className={`px-3 py-3 text-center border-r border-border min-w-[155px] ${isToday(day) ? "bg-primary/5" : ""}`}>
+                <p className={`text-sm font-bold ${isToday(day) ? "text-primary" : "text-foreground"}`}>
+                  {DAY_LABELS[i]}{" "}
+                  <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full ${isToday(day) ? "bg-primary text-primary-foreground" : ""}`}>{day.getDate()}</span>{" "}
+                  {day.toLocaleDateString("en-GB", { month: "short" })}
+                </p>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {resources.map((res, ri) => {
+            const p = pal(ri);
+            const cap = 8; // Default capacity since field doesn't exist in Resource doctype
+            return (
+              <tr key={res.name} className="border-b border-border">
+                <td className="w-[190px] min-w-[190px] border-r border-border bg-card align-top p-3">
+                  <div className="flex items-center gap-2.5 mb-2">
+                    <Avatar name={res.resource_name} size="md" ci={ri} />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-foreground truncate">{res.resource_name}</p>
+                      <p className="text-[11px] text-muted-foreground truncate">{res.designation || "Technician"} · {cap}h/day</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${res.is_active === false ? "bg-amber-500" : "bg-emerald-500"}`} />
+                    <span className="text-[11px] text-muted-foreground">{res.is_active === false ? "Inactive" : "Available"}</span>
+                  </div>
+                </td>
+                {days.map((day, di) => {
+                  const dk = dateKey(day);
+                  const { used, pct, over } = cellHours(res.name, dk, cap);
+                  const dayItems = grid[res.name]?.[dk] || [];
+                  return (
+                    <td key={di} className={`align-top border-r border-border p-0 ${isToday(day) ? "bg-primary/3" : "bg-background"}`}>
+                      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/50">
+                        <span className={`text-[10px] font-semibold ${over ? "text-red-500" : "text-muted-foreground"}`}>{used.toFixed(1)}/{cap}h</span>
+                        <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden mx-1">
+                          <div className={`h-full rounded-full transition-all ${over ? "bg-red-500" : pct > 75 ? "bg-amber-500" : "bg-primary"}`} style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className={`text-[10px] font-semibold ${over ? "text-red-500" : "text-muted-foreground"}`}>{pct}%{over && " ▲"}</span>
+                      </div>
+                      <div className="p-1.5 min-h-[72px]">
+                        {dayItems.length === 0 && <div className="h-14 rounded-lg border border-dashed border-border/50 flex items-center justify-center"><span className="text-[10px] text-muted-foreground/40">Drop here</span></div>}
+                        {dayItems.map((it, idx) => (
+                          <button key={idx} onClick={() => onItemClick(it)}
+                            className={`w-full text-left rounded-lg p-2 mb-1 last:mb-0 ${p.card} hover:opacity-90 transition-opacity shadow-sm`}>
+                            {itemTime(it) && <p className="text-[10px] font-bold opacity-80">{itemTime(it)}</p>}
+                            <p className="text-[11px] font-bold leading-tight">{(it as PPMSchedule).pm_id || (it as WorkOrder).wo_number || it.name}</p>
+                            <p className="text-[11px] opacity-90 truncate leading-tight">{itemTitle(it)}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+          {grid["__unassigned"] && (
+            <tr className="border-b border-border bg-muted/20">
+              <td className="border-r border-border p-3 align-top"><p className="text-xs font-bold text-muted-foreground">Unassigned</p></td>
+              {days.map((day, di) => {
+                const dk = dateKey(day);
+                const its = grid["__unassigned"]?.[dk] || [];
+                return <td key={di} className="border-r border-border p-1.5 align-top">{its.map((it, idx) => (
+                  <button key={idx} onClick={() => onItemClick(it)} className="w-full text-left rounded-lg p-2 mb-1 bg-amber-100 border border-amber-200 hover:bg-amber-200 transition-colors">
+                    <p className="text-[11px] font-semibold text-amber-800 truncate">{itemTitle(it)}</p>
+                  </button>
+                ))}</td>;
+              })}
+            </tr>
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }
 
 /* ═══════════════════════════════════════════
-   MAIN COMPONENT
+   MONTH CALENDAR VIEW
 ═══════════════════════════════════════════ */
-
-const DEMO_TECHNICIANS: Technician[] = [
-  { name: "raj-mehta",      full_name: "Raj Mehta",      role: "HVAC Tech",     capacity_hours: 8, status: "Available" },
-  { name: "sunita-rao",     full_name: "Sunita Rao",     role: "Plumbing",      capacity_hours: 8, status: "On Job"    },
-  { name: "arjun-nair",     full_name: "Arjun Nair",     role: "Electrical",    capacity_hours: 8, status: "Available" },
-  { name: "priya-shah",     full_name: "Priya Shah",     role: "Security / IT", capacity_hours: 8, status: "On Job"    },
-  { name: "mohammed-ali",   full_name: "Mohammed Ali",   role: "Soft Services", capacity_hours: 8, status: "Available" },
-];
-
-type ViewMode = "Job Requests" | "Call Tasks";
-
-export default function Scheduler() {
-  const [weekStart, setWeekStart] = useState<Date>(() => getWeekStart(new Date()));
-  const [viewMode, setViewMode] = useState<ViewMode>("Job Requests");
-  const [selectedWO, setSelectedWO] = useState<WorkOrder | PPMSchedule | null>(null);
-  const [modalType, setModalType] = useState<"wo" | "ppm">("wo");
-
-  /* fetch PPM schedules for the current week */
-  const weekEnd = addDays(weekStart, 6);
-  const { data: ppms, loading: ppmLoading } = useFetchData<PPMSchedule>(
-    "PPM Schedule",
-    ["name", "schedule_name", "ppm_id", "status", "frequency", "next_run_date",
-      "last_run_date", "assigned_technician", "assigned_to", "property", "property_name",
-      "asset_code", "asset_name", "service_group", "planned_duration", "overdue_days"],
-    [["next_run_date", "between", [dateKey(weekStart), dateKey(weekEnd)]]]
-  );
-
-  const { data: workOrders, loading: woLoading } = useFetchData<WorkOrder>(
-    "Work Order",
-    ["name", "subject", "description", "status", "priority", "scheduled_date",
-      "start_time", "estimated_hours", "assigned_to", "technician", "property", "location", "asset_name"],
-    [["scheduled_date", "between", [dateKey(weekStart), dateKey(weekEnd)]]]
-  );
-
-  const { data: unassignedSRs } = useFetchData<SRUnassigned>(
-    "Service Request",
-    ["name", "sr_title", "fault_category", "property_name", "property_code",
-      "reported_by", "priority_actual", "raised_date", "raised_time", "status", "wo_source"],
-    [["status", "=", "Open"], ["converted_to_wo", "=", 0]]
-  );
-
-  /* build day columns */
-  const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-
-  /* map WOs / PPMs by technician + day */
-  type DayMap = Record<string, (WorkOrder | PPMSchedule)[]>;
-  const scheduleMap: Record<string, DayMap> = {};
-
-  (viewMode === "Job Requests" ? workOrders : ppms).forEach((item) => {
-    const dateField = (item as WorkOrder).scheduled_date || (item as PPMSchedule).next_run_date;
-    const tech = (item as WorkOrder).assigned_to || (item as PPMSchedule).assigned_technician || "unassigned";
-    if (!scheduleMap[tech]) scheduleMap[tech] = {};
-    if (!scheduleMap[tech][dateField]) scheduleMap[tech][dateField] = [];
-    scheduleMap[tech][dateField].push(item);
-  });
-
-  const prevWeek = () => setWeekStart(addDays(weekStart, -7));
-  const nextWeek = () => setWeekStart(addDays(weekStart, 7));
-  const goToday = () => setWeekStart(getWeekStart(new Date()));
-
-  const techInitials = (name?: string) =>
-    (name || "??").split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
-
-  /* ── PRIORITY DOT for unassigned requests ── */
-  const PRIORITY_DOT: Record<string, string> = {
-    "P1 - Critical": "bg-red-500", "P2 - High": "bg-orange-500",
-    "P3 - Medium": "bg-blue-500", "P4 - Low": "bg-gray-400",
-  };
-
-  const weekLabel = `Week of ${fmtDay(weekStart)}–${fmtDay(addDays(weekStart, 6))} ${weekStart.getFullYear()}`;
-
+function MonthView({ items, anchor, onItemClick }: { items: ScheduleItem[]; anchor: Date; onItemClick: (it: ScheduleItem) => void }) {
+  const year = anchor.getFullYear(); const month = anchor.getMonth();
+  const firstDay = new Date(year, month, 1); const lastDay = new Date(year, month + 1, 0);
+  let gs = new Date(firstDay); const dow = gs.getDay(); gs.setDate(gs.getDate() - (dow === 0 ? 6 : dow - 1));
+  const cells: Date[] = []; let cur = new Date(gs);
+  while (cur <= lastDay || cells.length % 7 !== 0) { cells.push(new Date(cur)); cur.setDate(cur.getDate() + 1); if (cells.length > 42) break; }
+  const byDay: Record<string, ScheduleItem[]> = {};
+  items.forEach(it => { const dk = itemDate(it); if (!byDay[dk]) byDay[dk] = []; byDay[dk].push(it); });
   return (
-    <div className="flex flex-col h-full bg-[#0b0d13] text-gray-100 overflow-hidden">
-      {/* ══ TOP NAV BAR ══ */}
-      <div className="flex items-center gap-4 px-5 py-3 border-b border-[#1e2130] bg-[#0f1117] shrink-0">
-        <button className="p-1.5 hover:bg-white/10 rounded-lg transition-colors">
-          <Menu className="w-5 h-5 text-gray-400" />
-        </button>
-        <span className="text-sm font-semibold text-gray-300 border-l border-[#2a2d3a] pl-4">Technician Scheduler</span>
-        <div className="flex-1" />
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-          <input placeholder="Search requests, assets, WOs…"
-            className="pl-9 pr-4 py-2 bg-[#1a1d27] border border-[#2a2d3a] rounded-lg text-sm text-gray-300 placeholder:text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-600 w-64" />
-        </div>
-        <button className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-500 transition-colors">
-          <Plus className="w-4 h-4" /> New Request
-        </button>
-        <button className="p-2 hover:bg-white/10 rounded-lg"><Bell className="w-4 h-4 text-gray-400" /></button>
-        <button className="p-2 hover:bg-white/10 rounded-lg"><HelpCircle className="w-4 h-4 text-gray-400" /></button>
+    <div className="flex-1 overflow-auto">
+      <div className="grid grid-cols-7 border-b border-border bg-card sticky top-0 z-10">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d => <div key={d} className="py-2 text-center text-xs font-bold text-muted-foreground border-r last:border-r-0 border-border">{d}</div>)}
       </div>
+      <div className="grid grid-cols-7">
+        {cells.map((day, idx) => {
+          const dk = dateKey(day); const its = byDay[dk] || []; const inMonth = day.getMonth() === month; const tod = isToday(day);
+          const vis = its.slice(0, 2); const over = its.length - 2;
+          return (
+            <div key={idx} className={`min-h-[110px] border-b border-r border-border last:border-r-0 p-1.5 ${!inMonth ? "bg-muted/20" : "bg-background"} ${tod ? "bg-primary/3" : ""}`}>
+              <div className="mb-1">
+                <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-sm font-semibold ${tod ? "bg-primary text-primary-foreground" : inMonth ? "text-foreground" : "text-muted-foreground/40"}`}>{day.getDate()}</span>
+              </div>
+              {vis.map((it, i) => (
+                <button key={i} onClick={() => onItemClick(it)} className={`w-full text-left rounded px-2 py-0.5 mb-0.5 text-[11px] font-semibold truncate ${catCls(it)} hover:opacity-80 transition-opacity`}>
+                  {itemTime(it) && <span className="mr-1 opacity-80">{itemTime(it)}</span>}{itemTitle(it)}
+                </button>
+              ))}
+              {over > 0 && <p className="text-[11px] text-primary font-semibold pl-1 cursor-pointer hover:underline">+{over} more</p>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
-      {/* ══ SCHEDULER HEADER ══ */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-[#1e2130] bg-[#0f1117] shrink-0">
-        <div>
-          <h1 className="text-xl font-bold text-white">Technician Scheduler</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Gantt dispatch view · {weekLabel}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* view toggle */}
-          <div className="flex bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
-            {(["Job Requests", "Call Tasks"] as ViewMode[]).map((v) => (
-              <button key={v} onClick={() => setViewMode(v)}
-                className={`px-4 py-1.5 text-xs font-semibold transition-colors ${viewMode === v ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white"}`}>
-                {v}
+/* ═══════════════════════════════════════════
+   AGENDA VIEW
+═══════════════════════════════════════════ */
+function AgendaView({ items, onItemClick }: { items: ScheduleItem[]; onItemClick: (it: ScheduleItem) => void }) {
+  const sorted = [...items].sort((a, b) => itemDate(a).localeCompare(itemDate(b)));
+  const groups: Record<string, ScheduleItem[]> = {};
+  sorted.forEach(it => { const dk = itemDate(it) || "No Date"; if (!groups[dk]) groups[dk] = []; groups[dk].push(it); });
+  return (
+    <div className="flex-1 overflow-auto px-5 py-4">
+      {Object.entries(groups).map(([dk, its]) => (
+        <div key={dk} className="mb-6">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="flex flex-col items-center w-12 shrink-0">
+              <span className="text-xs font-bold text-muted-foreground uppercase">{dk !== "No Date" ? new Date(dk).toLocaleDateString("en-GB", { month: "short" }) : "—"}</span>
+              <span className={`text-2xl font-bold leading-tight ${isToday(new Date(dk)) ? "text-primary" : "text-foreground"}`}>{dk !== "No Date" ? new Date(dk).getDate() : "?"}</span>
+              <span className="text-[10px] text-muted-foreground">{dk !== "No Date" ? new Date(dk).toLocaleDateString("en-GB", { weekday: "short" }) : ""}</span>
+            </div>
+            <div className="flex-1 h-px bg-border" />
+          </div>
+          <div className="ml-15 flex flex-col gap-2">
+            {its.map((it, i) => (
+              <button key={i} onClick={() => onItemClick(it)} className="w-full text-left flex items-center gap-3 px-4 py-3 rounded-xl border border-border bg-card hover:bg-muted/40 transition-colors group">
+                <span className={`w-1 h-10 rounded-full ${catDot(it)}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-sm font-semibold text-foreground truncate">{itemTitle(it)}</p>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${STATUS_CLS[it.status] || "bg-muted text-muted-foreground"}`}>{it.status}</span>
+                    {(it as WorkOrder).actual_priority && PRIORITY_CFG[(it as WorkOrder).actual_priority!] && (
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${PRIORITY_CFG[(it as WorkOrder).actual_priority!].bg} ${PRIORITY_CFG[(it as WorkOrder).actual_priority!].text}`}>
+                        {PRIORITY_CFG[(it as WorkOrder).actual_priority!].label}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
+                    {itemTime(it) && <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{itemTime(it)}</span>}
+                    {(isPPM(it) ? it.property_name : (it as WorkOrder).property_name) && <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{isPPM(it) ? it.property_name : (it as WorkOrder).property_name}</span>}
+                    {itemTechName(it) && <span className="flex items-center gap-1"><User className="w-3 h-3" />{itemTechName(it)}</span>}
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
               </button>
             ))}
           </div>
-          {/* dropdowns */}
-          {["General Shift", "All Resources", "All Properties"].map((label) => (
-            <button key={label} className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a1d27] border border-[#2a2d3a] rounded-lg text-xs text-gray-300 hover:border-gray-500 transition-colors">
-              {label} <ChevronDown className="w-3.5 h-3.5" />
-            </button>
-          ))}
-          <button className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-500 transition-colors">Go</button>
         </div>
+      ))}
+      {sorted.length === 0 && <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2"><Calendar className="w-10 h-10" /><p className="text-sm">No scheduled items</p></div>}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   UNASSIGNED REQUESTS PANEL
+═══════════════════════════════════════════ */
+function UnassignedPanel({ requests, resources, onAssign }: { requests: ServiceRequest[]; resources: Resource[]; onAssign: (srName: string, tech: string) => void }) {
+  const [target, setTarget] = useState<string | null>(null);
+  const [techMap, setTechMap] = useState<Record<string, string>>({});
+  if (requests.length === 0) return null;
+  const PDOT: Record<string, string> = { "P1 - Critical": "bg-red-500", "P2 - High": "bg-orange-500", "P3 - Medium": "bg-blue-500", "P4 - Low": "bg-gray-400" };
+  return (
+    <div className="border-t border-border bg-card shrink-0">
+      <div className="flex items-center justify-between px-5 py-2.5 border-b border-border">
+        <div className="flex items-center gap-3">
+          <span className="w-2 h-2 rounded-full bg-amber-500" />
+          <span className="text-sm font-bold text-foreground">Un-Assigned Requests</span>
+          <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs font-semibold">{requests.length} pending</span>
+        </div>
+        <span className="text-xs text-muted-foreground italic">Click Assign to dispatch to a technician</span>
       </div>
-
-      {/* ══ GANTT BODY ══ */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full border-collapse" style={{ minWidth: "1000px" }}>
-          {/* ── COLUMN HEADERS ── */}
-          <thead>
-            <tr className="bg-[#0f1117] sticky top-0 z-20">
-              {/* week nav + technician header */}
-              <th className="w-[180px] min-w-[180px] px-3 py-2 text-left border-r border-[#2a2d3a] border-b border-b-[#2a2d3a]">
-                <div className="flex items-center gap-1">
-                  <button onClick={prevWeek} className="p-1 hover:bg-white/10 rounded transition-colors">
-                    <ChevronLeft className="w-3.5 h-3.5 text-gray-400" />
-                  </button>
-                  <button onClick={goToday} className="text-[11px] font-semibold text-gray-400 hover:text-white transition-colors px-1">Today</button>
-                  <button onClick={nextWeek} className="p-1 hover:bg-white/10 rounded transition-colors">
-                    <ChevronRight className="w-3.5 h-3.5 text-gray-400" />
-                  </button>
-                </div>
-                <p className="text-[10px] text-gray-600 mt-0.5">Technician / Capacity</p>
-              </th>
-              {days.map((day, i) => (
-                <th key={i} className={`px-2 py-2 text-center border-r border-[#2a2d3a] border-b border-b-[#2a2d3a] min-w-[160px]
-                  ${isToday(day) ? "bg-[#1a2236]" : ""}`}>
-                  <p className={`text-sm font-bold ${isToday(day) ? "text-blue-400" : "text-gray-300"}`}>
-                    {DAY_LABELS[i]} {("0" + day.getDate()).slice(-2)} {day.toLocaleDateString("en-GB", { month: "short" })}
-                  </p>
-                </th>
-              ))}
-            </tr>
-          </thead>
-
+      <div className="overflow-x-auto max-h-52">
+        <table className="w-full text-xs">
+          <thead><tr className="border-b border-border bg-muted/30">{["Request No", "Category", "Building", "Contact", "Priority", "Due Date", "Created", "Status", "Action"].map(h => <th key={h} className="px-4 py-2 text-left font-bold text-muted-foreground uppercase tracking-wider whitespace-nowrap">{h}</th>)}</tr></thead>
           <tbody>
-            {DEMO_TECHNICIANS.map((tech, techIdx) => {
-              const color = techColor(techIdx);
-              const techSchedule = scheduleMap[tech.name] || scheduleMap[tech.full_name || ""] || {};
-              const totalHoursUsed = Object.values(techSchedule).reduce((sum, items) => sum + items.length * 1.5, 0);
-              const isOverloaded = totalHoursUsed > (tech.capacity_hours || 8);
-
+            {requests.map((sr, i) => {
+              const urg = sr.priority_actual === "P1 - Critical";
+              const dot = PDOT[sr.priority_actual || ""] || "bg-gray-400";
               return (
-                <tr key={tech.name} className="border-b border-[#1e2130]">
-                  {/* technician info cell */}
-                  <td className="w-[180px] min-w-[180px] align-top border-r border-[#2a2d3a] bg-[#0f1117] p-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className={`w-9 h-9 rounded-full ${color.avatar} flex items-center justify-center text-xs font-bold text-[#0f1117] shrink-0`}>
-                        {techInitials(tech.full_name)}
+                <tr key={sr.name} className={`border-b border-border hover:bg-muted/30 transition-colors ${i === requests.length - 1 ? "border-b-0" : ""}`}>
+                  <td className="px-4 py-2.5 font-semibold text-primary cursor-pointer hover:underline">{sr.name}</td>
+                  <td className="px-4 py-2.5 text-foreground">{sr.fault_category || "—"}</td>
+                  <td className="px-4 py-2.5 text-foreground">{sr.property_name || sr.property_code || "—"}</td>
+                  <td className="px-4 py-2.5 text-foreground">{sr.reported_by || "—"}</td>
+                  <td className="px-4 py-2.5"><span className={`w-7 h-7 rounded-full ${dot} flex items-center justify-center text-white font-bold text-[10px]`}>{sr.priority_actual?.split(" - ")[0] || "?"}</span></td>
+                  <td className={`px-4 py-2.5 font-semibold ${urg ? "text-red-500" : "text-foreground"}`}>{sr.raised_date ? new Date(sr.raised_date).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "—"}{urg && " — TODAY"}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground">{sr.raised_date ? `${new Date(sr.raised_date).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} ${sr.raised_time || ""}` : ""}</td>
+                  <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${urg ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground"}`}>{urg ? "URGENT" : "Unassigned"}</span></td>
+                  <td className="px-4 py-2.5">
+                    {target === sr.name ? (
+                      <div className="flex items-center gap-1.5">
+                        <select value={techMap[sr.name] || ""} onChange={e => setTechMap(p => ({ ...p, [sr.name]: e.target.value }))} className="border border-border rounded px-2 py-1 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-primary">
+                          <option value="">Select…</option>
+                          {resources.map(r => <option key={r.name} value={r.name}>{r.resource_name}</option>)}
+                        </select>
+                        <button disabled={!techMap[sr.name]} onClick={() => { onAssign(sr.name, techMap[sr.name]); setTarget(null); }} className="px-2.5 py-1 rounded bg-primary text-primary-foreground text-[10px] font-bold hover:bg-primary/90 disabled:opacity-40 transition-colors">OK</button>
+                        <button onClick={() => setTarget(null)} className="p-1 hover:bg-muted rounded transition-colors"><X className="w-3.5 h-3.5 text-muted-foreground" /></button>
                       </div>
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold text-white truncate">{tech.full_name}</p>
-                        <p className="text-[10px] text-gray-500 truncate">{tech.role} · {tech.capacity_hours}hrs/day</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className={`w-1.5 h-1.5 rounded-full ${tech.status === "On Job" ? "bg-amber-400" : "bg-emerald-400"}`} />
-                      <span className="text-[10px] text-gray-500">{tech.status}</span>
-                    </div>
+                    ) : (
+                      <button onClick={() => setTarget(sr.name)} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${urg ? "bg-red-500 hover:bg-red-600 text-white" : "bg-primary hover:bg-primary/90 text-primary-foreground"}`}>
+                        {urg ? "Assign NOW" : "Assign →"}
+                      </button>
+                    )}
                   </td>
-
-                  {/* day cells */}
-                  {days.map((day, dayIdx) => {
-                    const dk = dateKey(day);
-                    const items = techSchedule[dk] || [];
-                    const dayHours = items.length * 1.5;
-                    const dayOverloaded = dayHours > (tech.capacity_hours || 8);
-                    return (
-                      <td key={dayIdx} className={`align-top border-r border-[#2a2d3a] p-0 ${isToday(day) ? "bg-[#111827]" : "bg-[#0b0d13]"}`}>
-                        <CapacityBar used={dayHours} total={tech.capacity_hours || 8} isOverloaded={dayOverloaded} />
-                        <div className="p-1.5 min-h-[80px]">
-                          {items.length === 0 && (
-                            <div className="h-16 rounded-lg border border-dashed border-[#2a2d3a] flex items-center justify-center">
-                              <span className="text-[10px] text-gray-700">Drop here</span>
-                            </div>
-                          )}
-                          {items.map((item, idx) =>
-                            viewMode === "Job Requests" ? (
-                              <WOCard key={idx} wo={item as WorkOrder} colorCfg={color}
-                                onClick={() => { setSelectedWO(item); setModalType("wo"); }} />
-                            ) : (
-                              <PPMCard key={idx} ppm={item as PPMSchedule} colorCfg={color}
-                                onClick={() => { setSelectedWO(item); setModalType("ppm"); }} />
-                            )
-                          )}
-                        </div>
-                      </td>
-                    );
-                  })}
                 </tr>
               );
             })}
           </tbody>
         </table>
-
-        {(ppmLoading || woLoading) && (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="w-5 h-5 animate-spin text-blue-500 mr-2" />
-            <span className="text-sm text-gray-500">Loading schedules…</span>
-          </div>
-        )}
-
-        {/* ══ UN-ASSIGNED REQUESTS PANEL ══ */}
-        <div className="mx-4 my-4 bg-[#0f1117] border border-[#2a2d3a] rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-[#2a2d3a]">
-            <div className="flex items-center gap-3">
-              <span className="w-2 h-2 rounded-full bg-amber-400" />
-              <span className="text-sm font-bold text-white">Un-Assigned Requests</span>
-              <span className="px-2 py-0.5 rounded-full bg-[#2a2d3a] text-xs font-semibold text-gray-300">
-                {unassignedSRs.length} pending
-              </span>
-            </div>
-            <span className="text-xs text-gray-600 italic">Drag to scheduler grid · Click to assign</span>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-[#2a2d3a]">
-                  {["Request No", "Category", "Building", "Contact", "Role Required", "Priority", "Due Date", "Created", "Status", "Action"].map((h) => (
-                    <th key={h} className="px-4 py-2.5 text-left font-bold text-gray-600 uppercase tracking-wider whitespace-nowrap">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {unassignedSRs.length === 0 && (
-                  <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-gray-600">No unassigned requests</td>
-                  </tr>
-                )}
-                {unassignedSRs.map((sr, i) => {
-                  const isUrgent = sr.priority_actual === "P1 - Critical";
-                  const dotClass = PRIORITY_DOT[sr.priority_actual || ""] || "bg-gray-400";
-                  return (
-                    <tr key={sr.name} className={`border-b border-[#1e2130] hover:bg-[#1a1d27] transition-colors ${i === unassignedSRs.length - 1 ? "border-b-0" : ""}`}>
-                      <td className="px-4 py-3 font-semibold text-blue-400 cursor-pointer hover:underline">{sr.name}</td>
-                      <td className="px-4 py-3 text-gray-300">{sr.fault_category || "—"}</td>
-                      <td className="px-4 py-3 text-gray-300">{sr.property_name || sr.property_code || "—"}</td>
-                      <td className="px-4 py-3 text-gray-300">{sr.reported_by || "—"}</td>
-                      <td className="px-4 py-3 text-gray-400">—</td>
-                      <td className="px-4 py-3">
-                        <span className={`w-7 h-7 rounded-full ${dotClass} flex items-center justify-center text-white font-bold text-[10px]`}>
-                          {sr.priority_actual?.split(" - ")[0] || "?"}
-                        </span>
-                      </td>
-                      <td className={`px-4 py-3 font-semibold ${isUrgent ? "text-red-400" : "text-gray-300"}`}>
-                        {sr.raised_date ? new Date(sr.raised_date).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "—"}
-                        {isUrgent && " — TODAY"}
-                      </td>
-                      <td className="px-4 py-3 text-gray-400">
-                        {sr.raised_date ? `${new Date(sr.raised_date).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} ${sr.raised_time || ""}` : "—"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${isUrgent ? "bg-red-600 text-white" : "bg-[#2a2d3a] text-gray-400"}`}>
-                          {isUrgent ? "URGENT" : "Unassigned"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <button className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors
-                          ${isUrgent ? "bg-red-600 hover:bg-red-500 text-white" : "bg-blue-600 hover:bg-blue-500 text-white"}`}>
-                          {isUrgent ? "Assign NOW" : "Assign →"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
       </div>
-
-      {/* ══ WO DETAIL MODAL ══ */}
-      {selectedWO && modalType === "wo" && (
-        <WODetailModal wo={selectedWO as WorkOrder} onClose={() => setSelectedWO(null)} />
-      )}
-      {selectedWO && modalType === "ppm" && (
-        <WODetailModal
-          wo={{
-            name: (selectedWO as PPMSchedule).ppm_id || (selectedWO as PPMSchedule).name,
-            subject: (selectedWO as PPMSchedule).schedule_name,
-            description: `${(selectedWO as PPMSchedule).frequency} PPM — ${(selectedWO as PPMSchedule).asset_name || ""}`,
-            status: (selectedWO as PPMSchedule).status,
-            scheduled_date: (selectedWO as PPMSchedule).next_run_date,
-            assigned_to: (selectedWO as PPMSchedule).assigned_technician,
-          }}
-          onClose={() => setSelectedWO(null)}
-        />
-      )}
     </div>
   );
 }
 
-/* ─── tiny hook wrapper (avoids duplication) ─── */
-function useFetchData<T>(doctype: string, fields: string[], filters: FF) {
-  const [data, setData] = useState<T[]>([]);
-  const [loading, setLoading] = useState(false);
+/* ═══════════════════════════════════════════
+   CATEGORY LEGEND
+═══════════════════════════════════════════ */
+const LEGEND_ITEMS = [
+  ["Cleaning Requests", "bg-[#06b6d4]"], ["Maintenance", "bg-[#22c55e]"], ["Inspections", "bg-[#f97316]"],
+  ["Security", "bg-[#ec4899]"], ["Preventive Maintenance", "bg-[#6366f1]"], ["IT Requests", "bg-[#8b5cf6]"],
+  ["Landscaping", "bg-[#84cc16]"], ["Pest Control", "bg-[#ef4444]"], ["Schedule Requests", "bg-[#f59e0b]"],
+];
 
-  const fetch_ = useCallback(async () => {
-    setLoading(true);
-    try { setData(await frappeGet<T>(doctype, fields, filters)); }
-    catch { setData([]); }
-    finally { setLoading(false); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doctype]);
+/* ═══════════════════════════════════════════
+   MAIN COMPONENT
+═══════════════════════════════════════════ */
+type ViewType = "Gantt" | "Month" | "Agenda";
+const FALLBACK_RESOURCES: Resource[] = [
+  { name: "r1", resource_name: "Raj Mehta", designation: "HVAC Tech", is_active: true },
+  { name: "r2", resource_name: "Sunita Rao", designation: "Plumbing", is_active: true },
+  { name: "r3", resource_name: "Arjun Nair", designation: "Electrical", is_active: true },
+  { name: "r4", resource_name: "Priya Shah", designation: "Security / IT", is_active: true },
+  { name: "r5", resource_name: "Mohammed Ali", designation: "Soft Services", is_active: true },
+];
 
-  useEffect(() => { fetch_(); }, [fetch_]);
-  return { data, loading, refetch: fetch_ };
+export default function Scheduler() {
+  const [view, setView] = useState<ViewType>("Gantt");
+  const [anchor, setAnchor] = useState<Date>(() => new Date());
+  const [mode, setMode] = useState<"Job Requests" | "Call Tasks">("Job Requests");
+  const [selected, setSelected] = useState<ScheduleItem | null>(null);
+  const [search, setSearch] = useState("");
+
+  const wkStart = getWeekStart(anchor);
+  const wkEnd = addDays(wkStart, 6);
+  const mStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const mEnd = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
+  const rs = dateKey(view === "Gantt" ? wkStart : mStart);
+  const re = dateKey(view === "Gantt" ? wkEnd : mEnd);
+
+  const { data: resources, loading: rL, error: rE, refetch: rR } = useFetch<Resource>("Resource", ["name", "resource_name", "designation", "is_active"], [], []);
+  const { data: ppms, loading: pL, refetch: pR } = useFetch<PPMSchedule>("PPM Schedule",
+    ["name", "pm_id", "pm_title", "pm_type", "frequency", "status", "asset_code", "asset_name", "asset_category", "service_group", "property_code", "property_name", "zone_code", "sub_zone_code", "client_code", "client_name", "contract_code", "contract_group", "last_done_date", "next_due_date", "overdue_by_days", "assigned_to", "assigned_technician", "ppm_wo_number", "planned_duration_hrs", "estimated_spares", "checklist_reference", "notes"],
+    [["next_due_date", "between", [rs, re] as unknown as string]], [rs, re]);
+  const { data: workOrders, loading: wL, refetch: wR } = useFetch<WorkOrder>("Work Orders",
+    ["name", "wo_number", "wo_title", "wo_type", "status", "actual_priority", "assigned_to", "assigned_technician", "schedule_start_date", "schedule_start_time", "schedule_end_time", "planned_duration_min", "property_code", "property_name", "asset_code", "asset_name", "service_group", "fault_category", "client_code", "client_name", "response_sla_target", "response_sla_actual", "response_sla_breach", "resolution_sla_target", "resolution_sla_actual", "resolution_sla_breach", "work_done_notes"],
+    [["schedule_start_date", "between", [rs, re] as unknown as string]], [rs, re]);
+  const { data: unassignedSRs, refetch: sR } = useFetch<ServiceRequest>("Service Request",
+    ["name", "sr_title", "fault_category", "property_name", "property_code", "reported_by", "priority_actual", "raised_date", "raised_time", "status"],
+    [["status", "=", "Open"], ["converted_to_wo", "=", 0]], []);
+
+  const refetchAll = () => { pR(); wR(); sR(); rR(); };
+  const allItems: ScheduleItem[] = mode === "Job Requests" ? (workOrders as ScheduleItem[]) : (ppms as ScheduleItem[]);
+  const filtered = allItems.filter(it => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return itemTitle(it).toLowerCase().includes(q) || itemTechName(it).toLowerCase().includes(q) || ((isPPM(it) ? it.property_name : (it as WorkOrder).property_name) || "").toLowerCase().includes(q);
+  });
+
+  const isLoading = pL || wL || rL;
+  const res = resources.length > 0 ? resources : FALLBACK_RESOURCES;
+
+  function nav(dir: -1 | 1) {
+    if (view === "Gantt") setAnchor(addDays(anchor, dir * 7));
+    else setAnchor(new Date(anchor.getFullYear(), anchor.getMonth() + dir, 1));
+  }
+  const navLabel = view === "Gantt" ? `Week of ${fmtShort(wkStart)}–${fmtShort(wkEnd)} ${wkStart.getFullYear()}` : `${MONTH_NAMES[anchor.getMonth()]} ${anchor.getFullYear()}`;
+
+  function handleAssign(srName: string, tech: string) {
+    frappeUpdate("Service Request", srName, { assigned_to: tech }).then(() => sR());
+  }
+
+  return (
+    <div className="flex flex-col h-full bg-background">
+      {/* TOP BAR */}
+      <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-card shrink-0">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Technician Scheduler</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {view === "Gantt" ? "Gantt dispatch view" : view === "Month" ? "Monthly calendar view" : "Agenda view"} · {navLabel}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search WOs, assets, technicians…"
+              className="pl-9 pr-4 py-2 border border-border rounded-lg text-sm bg-background w-56 focus:outline-none focus:ring-2 focus:ring-ring" />
+          </div>
+          <button onClick={refetchAll} className="p-2 rounded-lg hover:bg-muted transition-colors" title="Refresh">
+            <RefreshCw className={`w-4 h-4 text-muted-foreground ${isLoading ? "animate-spin" : ""}`} />
+          </button>
+          <button className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors">
+            <Plus className="w-4 h-4" /> New Request
+          </button>
+          <button className="p-2 rounded-lg hover:bg-muted transition-colors"><Bell className="w-4 h-4 text-muted-foreground" /></button>
+        </div>
+      </div>
+
+      {/* CONTROLS BAR */}
+      <div className="flex items-center justify-between px-5 py-2.5 border-b border-border bg-card shrink-0 gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          <button onClick={() => nav(-1)} className="p-1.5 rounded-lg border border-border hover:bg-muted transition-colors"><ChevronLeft className="w-4 h-4 text-muted-foreground" /></button>
+          <button onClick={() => setAnchor(new Date())} className="px-3 py-1.5 rounded-lg border border-border text-xs font-semibold text-foreground hover:bg-muted transition-colors">Today</button>
+          <button onClick={() => nav(1)} className="p-1.5 rounded-lg border border-border hover:bg-muted transition-colors"><ChevronRight className="w-4 h-4 text-muted-foreground" /></button>
+          <span className="text-sm font-bold text-foreground">{navLabel}</span>
+          <div className="flex bg-muted rounded-lg overflow-hidden border border-border">
+            {(["Job Requests", "Call Tasks"] as const).map(v => (
+              <button key={v} onClick={() => setMode(v)} className={`px-4 py-1.5 text-xs font-semibold transition-colors ${mode === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>{v}</button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center border border-border rounded-lg overflow-hidden">
+            {([{ id: "Gantt" as ViewType, icon: <LayoutGrid className="w-4 h-4" />, label: "Gantt" }, { id: "Month" as ViewType, icon: <Calendar className="w-4 h-4" />, label: "Month" }, { id: "Agenda" as ViewType, icon: <List className="w-4 h-4" />, label: "Agenda" }]).map(({ id, icon, label }) => (
+              <button key={id} onClick={() => setView(id)} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold transition-colors ${view === id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted"}`}>{icon} {label}</button>
+            ))}
+          </div>
+          {["General Shift", "All Resources", "All Properties"].map(l => (
+            <button key={l} className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-xs text-foreground hover:bg-muted transition-colors">{l}<ChevronDown className="w-3.5 h-3.5 text-muted-foreground" /></button>
+          ))}
+          <button className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-xs text-foreground hover:bg-muted transition-colors"><Filter className="w-3.5 h-3.5" />Filter</button>
+        </div>
+      </div>
+
+      {/* LEGEND */}
+      <div className="flex items-center gap-4 px-5 py-2 border-b border-border bg-card flex-wrap shrink-0">
+        {LEGEND_ITEMS.map(([label, dot]) => (
+          <span key={label} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className={`w-2.5 h-2.5 rounded-full ${dot}`} />{label}
+          </span>
+        ))}
+      </div>
+
+      {rE && <ErrMsg msg={rE} />}
+      {isLoading && filtered.length === 0 && <Spin />}
+
+      {/* MAIN VIEW */}
+      <div className="flex-1 overflow-hidden flex flex-col">
+        {view === "Gantt" && <GanttView resources={res} items={filtered} weekAnchor={wkStart} onItemClick={setSelected} />}
+        {view === "Month" && <MonthView items={filtered} anchor={anchor} onItemClick={setSelected} />}
+        {view === "Agenda" && <AgendaView items={filtered} onItemClick={setSelected} />}
+      </div>
+
+      {/* UNASSIGNED PANEL */}
+      <UnassignedPanel requests={unassignedSRs} resources={res} onAssign={handleAssign} />
+
+      {/* DETAIL MODAL */}
+      {selected && <DetailModal item={selected} onClose={() => setSelected(null)} onStatusChange={() => { pR(); wR(); }} />}
+    </div>
+  );
 }

@@ -14,11 +14,17 @@ interface LoginCredentials {
 }
 
 export const useAuth = () => {
-  const [authState, setAuthState] = useState<AuthState>({
-    isAuthenticated: false,
-    user: null,
-    loading: false,
-    error: null,
+  const [authState, setAuthState] = useState<AuthState>(() => {
+    const isAuthenticated = localStorage.getItem('isAuthenticated') === 'true';
+    const userStr = localStorage.getItem('user');
+    const user = userStr && userStr !== 'undefined' ? JSON.parse(userStr) : null;
+
+    return {
+      isAuthenticated,
+      user,
+      loading: false,
+      error: null,
+    };
   });
 
   const navigate = useNavigate();
@@ -27,7 +33,7 @@ export const useAuth = () => {
     setAuthState(prev => ({ ...prev, loading: true, error: null }));
 
     try {
-      const response = await fetch(`http://10.107.31.184:8080/api/method/login`, {
+      const response = await fetch(`/api/method/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -42,37 +48,42 @@ export const useAuth = () => {
       const data = await response.json();
 
       if (response.ok && data.message === 'Logged In') {
-        navigate('/', { replace: true });
-        // Get user info after successful login
-        const userResponse = await fetch(`/api/method/frappe.auth.get_logged_user`, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
+        // Use the login response data directly
+        const userInfo = {
+          email: credentials.email,
+          full_name: data.full_name || credentials.email,
+          home_page: data.home_page || '/app'
+        };
+
+        setAuthState({
+          isAuthenticated: true,
+          user: userInfo,
+          loading: false,
+          error: null,
         });
-
-        const userData = await userResponse.json();
-
-        if (userResponse.ok) {
-          setAuthState({
-            isAuthenticated: true,
-            user: userData.message,
-            loading: false,
-            error: null,
-          });
-          
-          // Store session in localStorage
-          localStorage.setItem('isAuthenticated', 'true');
-          localStorage.setItem('user', JSON.stringify(userData.message));
-          
-          // Use setTimeout to ensure state is updated before navigation
-          setTimeout(() => {
-            navigate('/', { replace: true });
-          }, 100);
-          
-          return { success: true };
-        }
+        
+        // Store session in localStorage
+        localStorage.setItem('isAuthenticated', 'true');
+        localStorage.setItem('user', JSON.stringify(userInfo));
+        
+        // Call checkAuth to ensure AuthContext is updated
+        checkAuth();
+        
+        // Use setTimeout to ensure state is updated before navigation
+        setTimeout(() => {
+          navigate('/', { replace: true });
+        }, 100);
+        
+        return { success: true };
+      } else {
+        // Login failed
+        const errorMessage = data.message || 'Login failed';
+        setAuthState(prev => ({
+          ...prev,
+          loading: false,
+          error: errorMessage,
+        }));
+        return { success: false, error: errorMessage };
       }
 
     } catch (error) {
@@ -88,7 +99,7 @@ export const useAuth = () => {
 
   const logout = useCallback(async () => {
     try {
-      await fetch(`http://127.0.0.1:8000/api/method/logout`, {
+      await fetch(`/api/method/logout`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -120,11 +131,20 @@ export const useAuth = () => {
 
     console.log('checkAuth - isAuthenticated:', isAuthenticated, 'user:', user);
 
-    setAuthState({
-      isAuthenticated,
-      user,
-      loading: false,
-      error: null,
+    // Only update state if it's different from current state
+    setAuthState(prev => {
+      if (prev.isAuthenticated !== isAuthenticated || 
+          JSON.stringify(prev.user) !== JSON.stringify(user)) {
+        console.log('checkAuth - updating auth state');
+        return {
+          isAuthenticated,
+          user,
+          loading: false,
+          error: null,
+        };
+      }
+      console.log('checkAuth - state unchanged, skipping update');
+      return prev;
     });
 
     return isAuthenticated;

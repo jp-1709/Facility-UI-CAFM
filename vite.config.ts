@@ -7,13 +7,13 @@ import { componentTagger } from "lovable-tagger";
 export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
-    port: 8080,
+    port: 8081,
     hmr: {
       overlay: false,
     },
     proxy: {
       '/api': {
-        target: 'http://10.107.31.184:8080',
+        target: 'http://facility.quantcloud.in',
         changeOrigin: true,
         secure: false,
       },
