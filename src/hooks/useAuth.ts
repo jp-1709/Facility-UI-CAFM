@@ -32,6 +32,7 @@ export const useAuth = () => {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({
           usr: credentials.email,
           pwd: credentials.password,
@@ -41,50 +42,39 @@ export const useAuth = () => {
       const data = await response.json();
 
       if (response.ok && data.message === 'Logged In') {
+        navigate('/', { replace: true });
         // Get user info after successful login
-        let userData = null;
-        try {
-          const userResponse = await fetch(`http://10.107.31.184:8080/api/method/frappe.auth.get_logged_user`, {
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            credentials: 'include',
-          });
-
-          const userResponseData = await userResponse.json();
-          if (userResponse.ok) {
-            userData = userResponseData.message;
-          } else {
-            console.warn('Failed to fetch user data, proceeding with basic authentication');
-          }
-        } catch (error) {
-          console.warn('Error fetching user data, proceeding with basic authentication:', error);
-        }
-
-        // Set authentication state even if user data fetch fails
-        setAuthState({
-          isAuthenticated: true,
-          user: userData,
-          loading: false,
-          error: null,
+        const userResponse = await fetch(`/api/method/frappe.auth.get_logged_user`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include',
         });
-        
-        // Store session in localStorage
-        localStorage.setItem('isAuthenticated', 'true');
-        if (userData) {
-          localStorage.setItem('user', JSON.stringify(userData));
+
+        const userData = await userResponse.json();
+
+        if (userResponse.ok) {
+          setAuthState({
+            isAuthenticated: true,
+            user: userData.message,
+            loading: false,
+            error: null,
+          });
+          
+          // Store session in localStorage
+          localStorage.setItem('isAuthenticated', 'true');
+          localStorage.setItem('user', JSON.stringify(userData.message));
+          
+          // Use setTimeout to ensure state is updated before navigation
+          setTimeout(() => {
+            navigate('/', { replace: true });
+          }, 100);
+          
+          return { success: true };
         }
-        
-        // Navigate immediately after setting auth state
-        setTimeout(() => {
-          navigate('/', { replace: true });
-        }, 100);
-        
-        return { success: true };
       }
 
-      throw new Error(data.exc || 'Login failed');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred during login';
       setAuthState(prev => ({
@@ -98,7 +88,7 @@ export const useAuth = () => {
 
   const logout = useCallback(async () => {
     try {
-      await fetch(`/api/method/logout`, {
+      await fetch(`http://127.0.0.1:8000/api/method/logout`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
