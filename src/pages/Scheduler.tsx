@@ -1,17 +1,11 @@
-/**
- * Scheduler.tsx  –  Facility-UI  –  Technician Scheduler
- * Light theme matching the rest of the app.
- * Three views: Gantt (week), Month calendar, Agenda.
- * Dynamic data from Frappe: PPM Schedule + Work Orders + Service Requests.
- * WO / PPM card click → SLA + checklist detail modal.
- */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ChevronLeft, ChevronRight, Plus, Search, X, CheckCircle2,
   XCircle, AlertTriangle, Clock, ChevronDown, Loader2,
   Filter, User, MapPin, RefreshCw, Calendar, List,
-  LayoutGrid, Bell, Shield,
+  LayoutGrid, Bell, Shield, Building2, Maximize2, Minimize2, ChevronUp,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════
@@ -41,6 +35,24 @@ async function frappeUpdate<T>(doctype: string, name: string, payload: Partial<T
   return (await res.json()).data as T;
 }
 
+async function frappeCreate<T>(doctype: string, payload: Partial<T>): Promise<T> {
+  const res = await fetch(`${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}`, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || "" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Create failed");
+  return (await res.json()).data as T;
+}
+
+function generateID(prefix: string) {
+  const now = new Date();
+  const date = now.toISOString().split("T")[0].replace(/-/g, "");
+  const time = now.toTimeString().split(" ")[0].replace(/:/g, "");
+  const rand = Math.floor(Math.random() * 1000).toString().padStart(3, "0");
+  return `${prefix}-${date}-${time}-${rand}`;
+}
+
 function useFetch<T>(doctype: string, fields: string[], filters: FF, deps: unknown[]) {
   const [data, setData] = useState<T[]>([]);
   const [loading, setLoading] = useState(false);
@@ -59,11 +71,12 @@ function useFetch<T>(doctype: string, fields: string[], filters: FF, deps: unkno
 /* ═══════════════════════════════════════════
    TYPES
 ═══════════════════════════════════════════ */
-interface Resource { name: string; resource_name: string; designation?: string; is_active?: boolean; }
+interface Resource { name: string; resource_name: string; designation?: string; is_active?: boolean; branch_code?: string; branch_name?: string; }
 interface PPMSchedule {
   name: string; pm_id: string; pm_title: string; pm_type?: string; frequency?: string; status: string;
   asset_code?: string; asset_name?: string; asset_category?: string; service_group?: string;
   property_code?: string; property_name?: string; zone_code?: string; sub_zone_code?: string;
+  branch_code?: string; branch_name?: string;
   client_code?: string; client_name?: string; contract_code?: string; contract_group?: string;
   last_done_date?: string; next_due_date: string; overdue_by_days?: number;
   assigned_to?: string; assigned_technician?: string; ppm_wo_number?: string;
@@ -74,6 +87,7 @@ interface WorkOrder {
   assigned_to?: string; assigned_technician?: string;
   schedule_start_date?: string; schedule_start_time?: string; schedule_end_time?: string; planned_duration_min?: number;
   property_code?: string; property_name?: string; asset_code?: string; asset_name?: string;
+  branch_code?: string; branch_name?: string;
   service_group?: string; fault_category?: string; client_code?: string; client_name?: string;
   response_sla_target?: string; response_sla_actual?: string; response_sla_breach?: 0 | 1;
   resolution_sla_target?: string; resolution_sla_actual?: string; resolution_sla_breach?: 0 | 1;
@@ -82,7 +96,14 @@ interface WorkOrder {
 interface ServiceRequest {
   name: string; sr_title?: string; fault_category?: string;
   property_name?: string; property_code?: string; reported_by?: string;
+  branch_code?: string; branch_name?: string;
   priority_actual?: string; raised_date?: string; raised_time?: string; status: string;
+  appointment_date?: string; priority_default?: string; client_code?: string; client_name?: string;
+  contract_code?: string; contract_group?: string; zone_code?: string; sub_zone_code?: string;
+  base_unit_code?: string; asset_code?: string; service_group?: string; fault_code?: string;
+  reporting_level?: string; business_type?: string; approval_criticality?: string;
+  work_description?: string; response_sla_target?: string; resolution_sla_target?: string;
+  location_full_path?: string; wo_source?: string;
 }
 type ScheduleItem = PPMSchedule | WorkOrder;
 
@@ -280,7 +301,7 @@ function DetailModal({ item, onClose, onStatusChange }: { item: ScheduleItem; on
                 <div className={`border rounded-xl p-4 mb-3 ${wo.response_sla_breach ? "border-red-200 bg-red-50" : "border-emerald-200 bg-emerald-50"}`}>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">First Response</p>
                   <div className="flex items-center gap-2 mb-3">
-                    {wo.response_sla_breach ? <><XCircle className="w-5 h-5 text-red-500" /><span className="font-bold text-red-600">Breach</span></> : <><CheckCircle2 className="w-5 h-5 text-emerald-500" /><span className="font-bold text-emerald-600">Met</span></>}
+                    {wo.response_sla_breach ? <><XCircle className="w-5 h-5 text-red-500" /><span className="font-bold text-red-600">Breach</span></> : <><CheckCircle2 className="w-5 h-5 text-emerald-500" /><span className="font-bold text-emerald-600">Fulfilled</span></>}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     {[["Target", formatDate(wo.response_sla_target)], ["Actual", formatDate(wo.response_sla_actual) || "Pending"]].map(([l, v]) => (
@@ -292,7 +313,7 @@ function DetailModal({ item, onClose, onStatusChange }: { item: ScheduleItem; on
                 <div className={`border rounded-xl p-4 mb-3 ${wo.resolution_sla_breach ? "border-red-200 bg-red-50" : "border-border bg-muted/30"}`}>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Resolution</p>
                   <div className="flex items-center gap-2 mb-3">
-                    {wo.resolution_sla_breach ? <><XCircle className="w-5 h-5 text-red-500" /><span className="font-bold text-red-600">Breach</span></> : <><CheckCircle2 className="w-5 h-5 text-emerald-500" /><span className="font-bold text-emerald-600">Met</span></>}
+                    {wo.resolution_sla_breach ? <><XCircle className="w-5 h-5 text-red-500" /><span className="font-bold text-red-600">Breach</span></> : <><CheckCircle2 className="w-5 h-5 text-emerald-500" /><span className="font-bold text-emerald-600">Fulfilled</span></>}
                   </div>
                   <div className="grid grid-cols-2 gap-2 mb-2">
                     {[["Target", formatDate(wo.resolution_sla_target)], ["Actual", formatDate(wo.resolution_sla_actual) || "Pending"]].map(([l, v]) => (
@@ -438,6 +459,7 @@ function GanttView({ resources, items, weekAnchor, onItemClick }: { resources: R
    MONTH CALENDAR VIEW
 ═══════════════════════════════════════════ */
 function MonthView({ items, anchor, onItemClick }: { items: ScheduleItem[]; anchor: Date; onItemClick: (it: ScheduleItem) => void }) {
+  const [expandedDay, setExpandedDay] = useState<string | null>(null);
   const year = anchor.getFullYear(); const month = anchor.getMonth();
   const firstDay = new Date(year, month, 1); const lastDay = new Date(year, month + 1, 0);
   let gs = new Date(firstDay); const dow = gs.getDay(); gs.setDate(gs.getDate() - (dow === 0 ? 6 : dow - 1));
@@ -453,7 +475,8 @@ function MonthView({ items, anchor, onItemClick }: { items: ScheduleItem[]; anch
       <div className="grid grid-cols-7">
         {cells.map((day, idx) => {
           const dk = dateKey(day); const its = byDay[dk] || []; const inMonth = day.getMonth() === month; const tod = isToday(day);
-          const vis = its.slice(0, 2); const over = its.length - 2;
+          const isExpanded = expandedDay === dk;
+          const vis = isExpanded ? its : its.slice(0, 2); const over = its.length - 2;
           return (
             <div key={idx} className={`min-h-[110px] border-b border-r border-border last:border-r-0 p-1.5 ${!inMonth ? "bg-muted/20" : "bg-background"} ${tod ? "bg-primary/3" : ""}`}>
               <div className="mb-1">
@@ -464,7 +487,8 @@ function MonthView({ items, anchor, onItemClick }: { items: ScheduleItem[]; anch
                   {itemTime(it) && <span className="mr-1 opacity-80">{itemTime(it)}</span>}{itemTitle(it)}
                 </button>
               ))}
-              {over > 0 && <p className="text-[11px] text-primary font-semibold pl-1 cursor-pointer hover:underline">+{over} more</p>}
+              {over > 0 && !isExpanded && <p onClick={(e) => { e.stopPropagation(); setExpandedDay(dk); }} className="text-[11px] text-primary font-semibold pl-1 cursor-pointer hover:underline">+{over} more</p>}
+              {isExpanded && over > 0 && <p onClick={(e) => { e.stopPropagation(); setExpandedDay(null); }} className="text-[11px] text-muted-foreground font-semibold pl-1 cursor-pointer hover:underline">Show less</p>}
             </div>
           );
         })}
@@ -526,23 +550,49 @@ function AgendaView({ items, onItemClick }: { items: ScheduleItem[]; onItemClick
 /* ═══════════════════════════════════════════
    UNASSIGNED REQUESTS PANEL
 ═══════════════════════════════════════════ */
-function UnassignedPanel({ requests, resources, onAssign }: { requests: ServiceRequest[]; resources: Resource[]; onAssign: (srName: string, tech: string) => void }) {
+function UnassignedPanel({ requests, resources, onAssign, onRequestClick, height, setHeight, onResizeStart }: { 
+  requests: ServiceRequest[]; 
+  resources: Resource[]; 
+  onAssign: (srName: string, tech: string) => void; 
+  onRequestClick: (sr: ServiceRequest) => void;
+  height: number;
+  setHeight: (h: number) => void;
+  onResizeStart: (e: React.MouseEvent) => void;
+}) {
   const [target, setTarget] = useState<string | null>(null);
   const [techMap, setTechMap] = useState<Record<string, string>>({});
   if (requests.length === 0) return null;
   const PDOT: Record<string, string> = { "P1 - Critical": "bg-red-500", "P2 - High": "bg-orange-500", "P3 - Medium": "bg-blue-500", "P4 - Low": "bg-gray-400" };
+  const isMinimized = height <= 45;
+
   return (
-    <div className="border-t border-border bg-card shrink-0">
-      <div className="flex items-center justify-between px-5 py-2.5 border-b border-border">
+    <div className="border-t border-border bg-card shrink-0 relative flex flex-col" style={{ height: `${height}px`, minHeight: '45px', transition: 'height 0.1s ease-out' }}>
+      {/* RESIZE HANDLE */}
+      <div 
+        onMouseDown={onResizeStart}
+        className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize hover:bg-primary/40 transition-colors z-10"
+        title="Drag to resize"
+      />
+      
+      <div className="flex items-center justify-between px-5 py-2.5 border-b border-border shrink-0">
         <div className="flex items-center gap-3">
           <span className="w-2 h-2 rounded-full bg-amber-500" />
           <span className="text-sm font-bold text-foreground">Un-Assigned Requests</span>
           <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs font-semibold">{requests.length} pending</span>
         </div>
-        <span className="text-xs text-muted-foreground italic">Click Assign to dispatch to a technician</span>
+        <div className="flex items-center gap-4">
+          <span className="text-xs text-muted-foreground italic hidden sm:inline">Click Assign to dispatch to a technician</span>
+          <div className="flex items-center border border-border rounded-lg overflow-hidden bg-background">
+            <button onClick={() => setHeight(45)} className={`p-1.5 hover:bg-muted transition-colors ${height <= 45 ? "bg-muted text-primary" : "text-muted-foreground"}`} title="Minimize"><Minimize2 className="w-3.5 h-3.5" /></button>
+            <button onClick={() => setHeight(240)} className={`p-1.5 border-x border-border hover:bg-muted transition-colors ${height > 45 && height < 500 ? "bg-muted text-primary" : "text-muted-foreground"}`} title="Standard"><ChevronUp className="w-3.5 h-3.5" /></button>
+            <button onClick={() => setHeight(600)} className={`p-1.5 hover:bg-muted transition-colors ${height >= 500 ? "bg-muted text-primary" : "text-muted-foreground"}`} title="Maximize"><Maximize2 className="w-3.5 h-3.5" /></button>
+          </div>
+        </div>
       </div>
-      <div className="overflow-x-auto max-h-52">
-        <table className="w-full text-xs">
+      
+      {!isMinimized && (
+        <div className="overflow-auto flex-1">
+          <table className="w-full text-xs">
           <thead><tr className="border-b border-border bg-muted/30">{["Request No", "Category", "Building", "Contact", "Priority", "Due Date", "Created", "Status", "Action"].map(h => <th key={h} className="px-4 py-2 text-left font-bold text-muted-foreground uppercase tracking-wider whitespace-nowrap">{h}</th>)}</tr></thead>
           <tbody>
             {requests.map((sr, i) => {
@@ -550,14 +600,18 @@ function UnassignedPanel({ requests, resources, onAssign }: { requests: ServiceR
               const dot = PDOT[sr.priority_actual || ""] || "bg-gray-400";
               return (
                 <tr key={sr.name} className={`border-b border-border hover:bg-muted/30 transition-colors ${i === requests.length - 1 ? "border-b-0" : ""}`}>
-                  <td className="px-4 py-2.5 font-semibold text-primary cursor-pointer hover:underline">{sr.name}</td>
+                  <td className="px-4 py-2.5 font-semibold text-primary cursor-pointer hover:underline" onClick={() => onRequestClick(sr)}>{sr.name}</td>
                   <td className="px-4 py-2.5 text-foreground">{sr.fault_category || "—"}</td>
                   <td className="px-4 py-2.5 text-foreground">{sr.property_name || sr.property_code || "—"}</td>
                   <td className="px-4 py-2.5 text-foreground">{sr.reported_by || "—"}</td>
                   <td className="px-4 py-2.5"><span className={`w-7 h-7 rounded-full ${dot} flex items-center justify-center text-white font-bold text-[10px]`}>{sr.priority_actual?.split(" - ")[0] || "?"}</span></td>
-                  <td className={`px-4 py-2.5 font-semibold ${urg ? "text-red-500" : "text-foreground"}`}>{sr.raised_date ? new Date(sr.raised_date).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "—"}{urg && " — TODAY"}</td>
-                  <td className="px-4 py-2.5 text-muted-foreground">{sr.raised_date ? `${new Date(sr.raised_date).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} ${sr.raised_time || ""}` : ""}</td>
-                  <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${urg ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground"}`}>{urg ? "URGENT" : "Unassigned"}</span></td>
+                  <td className={`px-4 py-2.5 font-semibold ${urg ? "text-red-500" : "text-foreground"}`}>
+                    {sr.appointment_date ? formatDate(sr.appointment_date) : (sr.raised_date ? formatDate(sr.raised_date) : "—")}
+                    {sr.appointment_date && isToday(new Date(sr.appointment_date)) && <span className="text-primary ml-1.5 font-bold"> — TODAY</span>}
+                    {!sr.appointment_date && sr.raised_date && isToday(new Date(sr.raised_date)) && <span className="text-primary ml-1.5 font-bold"> — TODAY</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-muted-foreground">{sr.raised_date ? `${formatDate(sr.raised_date)} ${sr.raised_time || ""}` : ""}</td>
+                  <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${urg ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground"}`}>{sr.status || "Unassigned"}</span></td>
                   <td className="px-4 py-2.5">
                     {target === sr.name ? (
                       <div className="flex items-center gap-1.5">
@@ -580,6 +634,7 @@ function UnassignedPanel({ requests, resources, onAssign }: { requests: ServiceR
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }
@@ -597,20 +652,83 @@ const LEGEND_ITEMS = [
    MAIN COMPONENT
 ═══════════════════════════════════════════ */
 type ViewType = "Gantt" | "Month" | "Agenda";
+const MODE_OPTIONS = ["Job Requests", "Call Tasks", "Both"] as const;
+type ModeType = typeof MODE_OPTIONS[number];
 const FALLBACK_RESOURCES: Resource[] = [
   { name: "r1", resource_name: "Raj Mehta", designation: "HVAC Tech", is_active: true },
   { name: "r2", resource_name: "Sunita Rao", designation: "Plumbing", is_active: true },
   { name: "r3", resource_name: "Arjun Nair", designation: "Electrical", is_active: true },
-  { name: "r4", resource_name: "Priya Shah", designation: "Security / IT", is_active: true },
-  { name: "r5", resource_name: "Mohammed Ali", designation: "Soft Services", is_active: true },
+  { name: "r4", resource_name: "Priya Shah", designation: "Security / IT", is_active: true, branch_name: "South Mumbai" },
+  { name: "r5", resource_name: "Mohammed Ali", designation: "Soft Services", is_active: true, branch_name: "Vihar" },
 ];
 
+/* ═══════════════════════════════════════════
+   FILTER COMPONENTS
+═══════════════════════════════════════════ */
+function FilterDropdown({ label, icon: Icon, value, defaultLabel, options, onChange }: { label: string, icon?: any, value: string, defaultLabel: string, options: string[], onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
+
+  const active = value !== defaultLabel;
+
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen(!open)} className={`flex items-center gap-1.5 px-3 py-1.5 border transition-all duration-200 rounded-lg text-xs font-medium ${active ? "border-primary bg-primary/10 text-primary shadow-sm" : "border-border text-foreground hover:bg-muted hover:border-border/80"}`}>
+        {Icon && <Icon className="w-3.5 h-3.5" />}
+        <span className="truncate max-w-[120px]">{active ? value : label}</span>
+        <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 shrink-0 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-2 w-56 max-h-64 overflow-y-auto bg-card/95 backdrop-blur-xl border border-border/80 rounded-xl shadow-[0_10px_40px_-10px_rgba(0,0,0,0.2)] z-50 p-1.5 fade-in ring-1 ring-black/5">
+          <button onClick={() => { onChange(defaultLabel); setOpen(false); }} className={`w-full text-left px-3 py-2.5 text-xs rounded-lg transition-colors flex items-center justify-between ${!active ? 'bg-primary text-primary-foreground font-semibold shadow-sm' : 'text-foreground hover:bg-muted font-medium'}`}>
+            {defaultLabel}
+            {!active && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+          </button>
+          {options.length > 0 && <div className="h-px bg-border/60 my-1.5 mx-2" />}
+          {options.map(opt => (
+            <button key={opt} title={opt} onClick={() => { onChange(opt); setOpen(false); }} className={`w-full text-left px-3 py-2.5 text-xs rounded-lg transition-colors flex items-center justify-between group ${value === opt ? 'bg-primary text-primary-foreground font-semibold shadow-sm' : 'text-foreground hover:bg-muted font-medium'}`}>
+              <span className="truncate pr-2">{opt}</span>
+              {value === opt && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+            </button>
+          ))}
+          {options.length === 0 && <div className="px-3 py-3 text-xs text-muted-foreground text-center italic">No options found</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Scheduler() {
+  const navigate = useNavigate();
   const [view, setView] = useState<ViewType>("Gantt");
   const [anchor, setAnchor] = useState<Date>(() => new Date());
-  const [mode, setMode] = useState<"Job Requests" | "Call Tasks">("Job Requests");
+  const [mode, setMode] = useState<ModeType>("Job Requests");
   const [selected, setSelected] = useState<ScheduleItem | null>(null);
   const [search, setSearch] = useState("");
+
+  const [shiftFilt, setShiftFilt] = useState("All Shifts");
+  const [resFilt, setResFilt] = useState("All Resources");
+  const [branchFilt, setBranchFilt] = useState("All Branches");
+  const [propFilt, setPropFilt] = useState("All Properties");
+  const [advFilt, setAdvFilt] = useState<{ status: string, priority: string, category: string }>({ status: "All", priority: "All", category: "All" });
+  const [advOpen, setAdvOpen] = useState(false);
+  const advRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (advRef.current && !advRef.current.contains(e.target as Node)) setAdvOpen(false);
+    }
+    if (advOpen) document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [advOpen]);
 
   const wkStart = getWeekStart(anchor);
   const wkEnd = addDays(wkStart, 6);
@@ -619,27 +737,105 @@ export default function Scheduler() {
   const rs = dateKey(view === "Gantt" ? wkStart : mStart);
   const re = dateKey(view === "Gantt" ? wkEnd : mEnd);
 
-  const { data: resources, loading: rL, error: rE, refetch: rR } = useFetch<Resource>("Resource", ["name", "resource_name", "designation", "is_active"], [], []);
+  const [panelHeight, setPanelHeight] = useState(240);
+  const [isResizing, setIsResizing] = useState(false);
+
+  const startResizing = useCallback((e: React.MouseEvent) => {
+    setIsResizing(true);
+    e.preventDefault();
+  }, []);
+
+  const stopResizing = useCallback(() => {
+    setIsResizing(false);
+  }, []);
+
+  const resize = useCallback((e: MouseEvent) => {
+    if (isResizing) {
+      const newHeight = window.innerHeight - e.clientY;
+      if (newHeight > 45 && newHeight < window.innerHeight * 0.8) {
+        setPanelHeight(newHeight);
+      }
+    }
+  }, [isResizing]);
+
+  useEffect(() => {
+    window.addEventListener('mousemove', resize);
+    window.addEventListener('mouseup', stopResizing);
+    return () => {
+      window.removeEventListener('mousemove', resize);
+      window.removeEventListener('mouseup', stopResizing);
+    };
+  }, [resize, stopResizing]);
+
+  const { data: resources, loading: rL, error: rE, refetch: rR } = useFetch<Resource>("Resource", ["name", "resource_name", "designation", "is_active", "branch_code", "branch_name"], [], []);
   const { data: ppms, loading: pL, refetch: pR } = useFetch<PPMSchedule>("PPM Schedule",
     ["name", "pm_id", "pm_title", "pm_type", "frequency", "status", "asset_code", "asset_name", "asset_category", "service_group", "property_code", "property_name", "zone_code", "sub_zone_code", "client_code", "client_name", "contract_code", "contract_group", "last_done_date", "next_due_date", "overdue_by_days", "assigned_to", "assigned_technician", "ppm_wo_number", "planned_duration_hrs", "estimated_spares", "checklist_reference", "notes"],
     [["next_due_date", "between", [rs, re] as unknown as string]], [rs, re]);
   const { data: workOrders, loading: wL, refetch: wR } = useFetch<WorkOrder>("Work Orders",
-    ["name", "wo_number", "wo_title", "wo_type", "status", "actual_priority", "assigned_to", "assigned_technician", "schedule_start_date", "schedule_start_time", "schedule_end_time", "planned_duration_min", "property_code", "property_name", "asset_code", "asset_name", "service_group", "fault_category", "client_code", "client_name", "response_sla_target", "response_sla_actual", "response_sla_breach", "resolution_sla_target", "resolution_sla_actual", "resolution_sla_breach", "work_done_notes"],
+    ["name", "wo_number", "wo_title", "wo_type", "status", "actual_priority", "assigned_to", "assigned_technician", "schedule_start_date", "schedule_start_time", "schedule_end_time", "planned_duration_min", "branch_code", "branch_name", "property_code", "property_name", "asset_code", "asset_name", "service_group", "fault_category", "client_code", "client_name", "response_sla_target", "response_sla_actual", "response_sla_breach", "resolution_sla_target", "resolution_sla_actual", "resolution_sla_breach", "work_done_notes"],
     [["schedule_start_date", "between", [rs, re] as unknown as string]], [rs, re]);
   const { data: unassignedSRs, refetch: sR } = useFetch<ServiceRequest>("Service Request",
-    ["name", "sr_title", "fault_category", "property_name", "property_code", "reported_by", "priority_actual", "raised_date", "raised_time", "status"],
+    ["name", "sr_title", "fault_category", "branch_code", "branch_name", "property_name", "property_code", "reported_by", "priority_actual", "raised_date", "raised_time", "status", "appointment_date", "priority_default", "client_code", "client_name", "contract_code", "contract_group", "zone_code", "sub_zone_code", "base_unit_code", "asset_code", "service_group", "fault_code", "reporting_level", "business_type", "approval_criticality", "work_description", "response_sla_target", "resolution_sla_target", "location_full_path", "wo_source"],
     [["status", "=", "Open"], ["converted_to_wo", "=", 0]], []);
 
   const refetchAll = () => { pR(); wR(); sR(); rR(); };
-  const allItems: ScheduleItem[] = mode === "Job Requests" ? (workOrders as ScheduleItem[]) : (ppms as ScheduleItem[]);
-  const filtered = allItems.filter(it => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return itemTitle(it).toLowerCase().includes(q) || itemTechName(it).toLowerCase().includes(q) || ((isPPM(it) ? it.property_name : (it as WorkOrder).property_name) || "").toLowerCase().includes(q);
-  });
 
   const isLoading = pL || wL || rL;
   const res = resources.length > 0 ? resources : FALLBACK_RESOURCES;
+
+  const allItems: ScheduleItem[] = mode === "Job Requests" ? (workOrders as ScheduleItem[]) : mode === "Call Tasks" ? (ppms as ScheduleItem[]) : [...(workOrders as ScheduleItem[]), ...(ppms as ScheduleItem[])];
+
+  const standardPriorities = ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"];
+  const uniqueBranches = (Array.from(new Set(allItems.map(it => (isPPM(it) ? it.branch_name : (it as WorkOrder).branch_name)).filter(Boolean))) as string[]).sort();
+  const uniqueProps = (Array.from(new Set(allItems.map(it => (isPPM(it) ? it.property_name : (it as WorkOrder).property_name)).filter(Boolean))) as string[]).sort();
+  const uniqueRes = (Array.from(new Set(res.map(r => r.resource_name).filter(Boolean))) as string[]).sort();
+  const uniqueStatuses = (Array.from(new Set(allItems.map(it => it.status).filter(Boolean))) as string[]).sort();
+  const uniquePriorities = (Array.from(new Set([...standardPriorities, ...workOrders.map(w => w.actual_priority).filter(Boolean)])) as string[]).sort();
+  const baseCategories = ["Electrical", "Plumbing", "HVAC", "Civil", "Cleaning", "Security"];
+  const dynamicCategories = allItems.map(it => (isPPM(it) ? it.asset_category : (it as WorkOrder).fault_category)).filter(Boolean) as string[];
+  const uniqueCategories = (Array.from(new Set(dynamicCategories.length > 0 ? dynamicCategories : baseCategories)) as string[]).sort();
+  const SHIFTS = ["Morning Shift (6AM-12PM)", "General Shift (9AM-6PM)", "Evening Shift (6PM-10PM)", "Night Shift (10PM-6AM)"];
+
+  const filtered = allItems.filter(it => {
+    if (search) {
+      const q = search.toLowerCase();
+      if (!itemTitle(it).toLowerCase().includes(q) && !itemTechName(it).toLowerCase().includes(q) && !((isPPM(it) ? it.property_name : (it as WorkOrder).property_name) || "").toLowerCase().includes(q)) {
+        return false;
+      }
+    }
+    if (branchFilt !== "All Branches") {
+      const b = isPPM(it) ? it.branch_name : (it as WorkOrder).branch_name;
+      if (b !== branchFilt) return false;
+    }
+    if (resFilt !== "All Resources" && itemTechName(it) !== resFilt) return false;
+    if (propFilt !== "All Properties") {
+      const p = isPPM(it) ? it.property_name : (it as WorkOrder).property_name;
+      if (p !== propFilt) return false;
+    }
+    if (shiftFilt !== "All Shifts") {
+      const t = itemTime(it);
+      if (t) {
+        const hour = parseInt(t.split(':')[0], 10);
+        if (shiftFilt.includes("Morning") && !(hour >= 6 && hour < 12)) return false;
+        if (shiftFilt.includes("General") && !(hour >= 9 && hour < 18)) return false;
+        if (shiftFilt.includes("Evening") && !(hour >= 18 && hour < 22)) return false;
+        if (shiftFilt.includes("Night") && !(hour >= 22 || hour < 6)) return false;
+      } else { return false; }
+    }
+    if (advFilt.status !== "All" && it.status !== advFilt.status) return false;
+    if (advFilt.priority !== "All" && (it as WorkOrder).actual_priority !== advFilt.priority) return false;
+    if (advFilt.category !== "All") {
+      const cat = isPPM(it) ? it.asset_category : (it as WorkOrder).fault_category;
+      if (cat !== advFilt.category) return false;
+    }
+    return true;
+  });
+
+  const filteredResources = res.filter(r => {
+    if (branchFilt !== "All Branches" && r.branch_name !== branchFilt) return false;
+    if (resFilt !== "All Resources" && r.resource_name !== resFilt) return false;
+    return true;
+  });
 
   function nav(dir: -1 | 1) {
     if (view === "Gantt") setAnchor(addDays(anchor, dir * 7));
@@ -647,8 +843,65 @@ export default function Scheduler() {
   }
   const navLabel = view === "Gantt" ? `Week of ${fmtShort(wkStart)}–${fmtShort(wkEnd)} ${wkStart.getFullYear()}` : `${MONTH_NAMES[anchor.getMonth()]} ${anchor.getFullYear()}`;
 
-  function handleAssign(srName: string, tech: string) {
-    frappeUpdate("Service Request", srName, { assigned_to: tech }).then(() => sR());
+  async function handleAssign(srName: string, tech: string) {
+    const sr = unassignedSRs.find(x => x.name === srName);
+    if (!sr) return;
+
+    try {
+      const woNumber = generateID("WO");
+      const woPayload = {
+        wo_number: woNumber,
+        wo_title: sr.sr_title,
+        wo_type: "Reactive Maintenance",
+        wo_source: "Service Request",
+        status: "Open",
+        actual_priority: sr.priority_actual,
+        default_priority: sr.priority_default,
+        client_code: sr.client_code,
+        client_name: sr.client_name,
+        contract_code: sr.contract_code,
+        contract_group: sr.contract_group,
+        property_code: sr.property_code,
+        property_name: sr.property_name,
+        zone_code: sr.zone_code,
+        sub_zone_code: sr.sub_zone_code,
+        base_unit_code: sr.base_unit_code,
+        asset_code: sr.asset_code,
+        service_group: sr.service_group,
+        fault_category: sr.fault_category,
+        fault_code: sr.fault_code,
+        reporting_level: sr.reporting_level,
+        business_type: sr.business_type,
+        approval_criticality: sr.approval_criticality,
+        sr_number: sr.name,
+        location_full_path: sr.location_full_path,
+        work_done_notes: sr.work_description,
+        assigned_to: tech,
+        schedule_start_date: sr.appointment_date || new Date().toISOString().split("T")[0],
+        schedule_start_time: new Date().toTimeString().slice(0, 5),
+        ...(sr.response_sla_target && { response_sla_target: sr.response_sla_target }),
+        ...(sr.resolution_sla_target && { resolution_sla_target: sr.resolution_sla_target }),
+      };
+
+      await frappeCreate("Work Orders", woPayload);
+      await frappeUpdate("Service Request", srName, {
+        converted_to_wo: 1,
+        status: "Converted",
+        // Force a valid wo_source if the current one is "Email" or invalid to bypass broken validation
+        ...((sr.wo_source === "Email" || !["Service Request", "PM Schedule", "Project", "Helpdesk", "Portal", "Phone", "Inspection", "Manual"].includes(sr.wo_source || "")) && { wo_source: "Service Request" })
+      });
+
+      sR(); // Refresh unassigned requests
+      refetchAll(); // Refresh all data including main views
+    } catch (e: unknown) {
+      console.error("Assignment failed:", e);
+      alert(`Assignment failed: ${(e as Error).message}`);
+    }
+  }
+
+  function handleRequestClick(sr: ServiceRequest) {
+    // Navigate to Requests page with the specific request name as parameter
+    navigate(`/requests?request=${encodeURIComponent(sr.name)}`);
   }
 
   return (
@@ -685,7 +938,7 @@ export default function Scheduler() {
           <button onClick={() => nav(1)} className="p-1.5 rounded-lg border border-border hover:bg-muted transition-colors"><ChevronRight className="w-4 h-4 text-muted-foreground" /></button>
           <span className="text-sm font-bold text-foreground">{navLabel}</span>
           <div className="flex bg-muted rounded-lg overflow-hidden border border-border">
-            {(["Job Requests", "Call Tasks"] as const).map(v => (
+            {MODE_OPTIONS.map(v => (
               <button key={v} onClick={() => setMode(v)} className={`px-4 py-1.5 text-xs font-semibold transition-colors ${mode === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>{v}</button>
             ))}
           </div>
@@ -696,10 +949,59 @@ export default function Scheduler() {
               <button key={id} onClick={() => setView(id)} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold transition-colors ${view === id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:bg-muted"}`}>{icon} {label}</button>
             ))}
           </div>
-          {["General Shift", "All Resources", "All Properties"].map(l => (
-            <button key={l} className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-xs text-foreground hover:bg-muted transition-colors">{l}<ChevronDown className="w-3.5 h-3.5 text-muted-foreground" /></button>
-          ))}
-          <button className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-xs text-foreground hover:bg-muted transition-colors"><Filter className="w-3.5 h-3.5" />Filter</button>
+          <FilterDropdown label="General Shift" icon={Clock} value={shiftFilt} defaultLabel="All Shifts" options={SHIFTS} onChange={setShiftFilt} />
+          <FilterDropdown label="All Resources" icon={User} value={resFilt} defaultLabel="All Resources" options={uniqueRes} onChange={setResFilt} />
+          <FilterDropdown label="All Branches" icon={Building2} value={branchFilt} defaultLabel="All Branches" options={uniqueBranches} onChange={setBranchFilt} />
+          <FilterDropdown label="All Properties" icon={MapPin} value={propFilt} defaultLabel="All Properties" options={uniqueProps} onChange={setPropFilt} />
+
+          <div className="relative" ref={advRef}>
+            <button onClick={() => setAdvOpen(!advOpen)} className={`flex items-center gap-1.5 px-3 py-1.5 border transition-all duration-200 rounded-lg text-xs font-medium ${(advFilt.status !== 'All' || advFilt.priority !== 'All' || advFilt.category !== 'All') ? "border-primary bg-primary/10 text-primary shadow-sm" : "border-border text-foreground hover:bg-muted hover:border-border/80"}`}><Filter className="w-3.5 h-3.5" />More Filters</button>
+            {advOpen && (
+              <div className="absolute top-full right-0 mt-2 w-80 bg-card/95 backdrop-blur-xl border border-border/80 rounded-2xl shadow-[0_15px_50px_-12px_rgba(0,0,0,0.25)] z-50 p-5 fade-in ring-1 ring-black/5">
+                <div className="flex items-center justify-between mb-5">
+                  <h3 className="text-sm font-bold text-foreground flex items-center gap-2"><Filter className="w-4 h-4 text-primary" /> Advanced Filters</h3>
+                  <button onClick={() => {
+                    setAdvFilt({ status: "All", priority: "All", category: "All" });
+                    setShiftFilt("All Shifts");
+                    setResFilt("All Resources");
+                    setBranchFilt("All Branches");
+                    setPropFilt("All Properties");
+                    setSearch("");
+                  }} className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground hover:text-primary transition-colors bg-muted hover:bg-primary/10 px-2 py-1 rounded">Reset All</button>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2 block">Status</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {["All", ...uniqueStatuses].map(s => (
+                        <button key={s} onClick={() => setAdvFilt(p => ({ ...p, status: s }))} className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all ${advFilt.status === s ? 'bg-primary text-primary-foreground shadow-md scale-105' : 'bg-muted/50 border border-border/50 text-muted-foreground hover:bg-muted hover:text-foreground'}`}>{s}</button>
+                      ))}
+                      {uniqueStatuses.length === 0 && <span className="text-xs text-muted-foreground italic">No statuses found</span>}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2 block">Priority</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {["All", ...uniquePriorities].map(p => (
+                        <button key={p} onClick={() => setAdvFilt(prev => ({ ...prev, priority: p }))} className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all ${advFilt.priority === p ? 'bg-primary text-primary-foreground shadow-md scale-105' : 'bg-muted/50 border border-border/50 text-muted-foreground hover:bg-muted hover:text-foreground'}`}>{p.split(" - ")[0]}</button>
+                      ))}
+                      {uniquePriorities.length === 0 && <span className="text-xs text-muted-foreground italic">No priorities found</span>}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2 block">Category</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {["All", ...uniqueCategories].map(c => (
+                        <button key={c} onClick={() => setAdvFilt(prev => ({ ...prev, category: c }))} className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all ${advFilt.category === c ? 'bg-primary text-primary-foreground shadow-md scale-105' : 'bg-muted/50 border border-border/50 text-muted-foreground hover:bg-muted hover:text-foreground'}`}>{c}</button>
+                      ))}
+                      {uniqueCategories.length === 0 && <span className="text-xs text-muted-foreground italic">No categories found</span>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -717,13 +1019,21 @@ export default function Scheduler() {
 
       {/* MAIN VIEW */}
       <div className="flex-1 overflow-hidden flex flex-col">
-        {view === "Gantt" && <GanttView resources={res} items={filtered} weekAnchor={wkStart} onItemClick={setSelected} />}
+        {view === "Gantt" && <GanttView resources={filteredResources} items={filtered} weekAnchor={wkStart} onItemClick={setSelected} />}
         {view === "Month" && <MonthView items={filtered} anchor={anchor} onItemClick={setSelected} />}
         {view === "Agenda" && <AgendaView items={filtered} onItemClick={setSelected} />}
       </div>
 
       {/* UNASSIGNED PANEL */}
-      <UnassignedPanel requests={unassignedSRs} resources={res} onAssign={handleAssign} />
+      <UnassignedPanel 
+        requests={unassignedSRs} 
+        resources={res} 
+        onAssign={handleAssign} 
+        onRequestClick={handleRequestClick}
+        height={panelHeight}
+        setHeight={setPanelHeight}
+        onResizeStart={startResizing}
+      />
 
       {/* DETAIL MODAL */}
       {selected && <DetailModal item={selected} onClose={() => setSelected(null)} onStatusChange={() => { pR(); wR(); }} />}

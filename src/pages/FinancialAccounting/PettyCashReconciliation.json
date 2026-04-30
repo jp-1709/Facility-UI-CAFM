@@ -1,0 +1,135 @@
+{
+  "name": "Petty Cash Reconciliation",
+  "doctype": "DocType",
+  "autoname": "PCRC-.####",
+  "module": "Accounts",
+  "is_submittable": 0,
+  "fields": [
+    {
+      "fieldname": "date",
+      "fieldtype": "Date",
+      "label": "Reconciliation Date",
+      "reqd": 1,
+      "default": "Today"
+    },
+    {
+      "fieldname": "petty_cash_account",
+      "fieldtype": "Link",
+      "label": "Petty Cash Account",
+      "options": "Account",
+      "reqd": 1,
+      "filters": [
+        {
+          "fieldname": "account_type",
+          "fieldtype": "Select",
+          "value": "Cash"
+        }
+      ]
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "label": "Company",
+      "options": "Company",
+      "reqd": 1,
+      "default": "Company"
+    },
+    {
+      "fieldname": "section_break_1",
+      "fieldtype": "Section Break",
+      "label": "Balance Information"
+    },
+    {
+      "fieldname": "system_balance",
+      "fieldtype": "Currency",
+      "label": "System Balance",
+      "options": "Company:company",
+      "read_only": 1,
+      "description": "Current balance as per system records"
+    },
+    {
+      "fieldname": "physical_balance",
+      "fieldtype": "Currency",
+      "label": "Physical Balance",
+      "options": "Company:company",
+      "description": "Actual cash in hand"
+    },
+    {
+      "fieldname": "difference",
+      "fieldtype": "Currency",
+      "label": "Difference",
+      "options": "Company:company",
+      "read_only": 1,
+      "description": "Physical Balance - System Balance"
+    },
+    {
+      "fieldname": "section_break_2",
+      "fieldtype": "Section Break",
+      "label": "Reconciliation Details"
+    },
+    {
+      "fieldname": "remarks",
+      "fieldtype": "Text",
+      "label": "Remarks",
+      "description": "Notes about the reconciliation process"
+    },
+    {
+      "fieldname": "reconciled_by",
+      "fieldtype": "Link",
+      "label": "Reconciled By",
+      "options": "User",
+      "read_only": 1,
+      "default": "User"
+    },
+    {
+      "fieldname": "reconciliation_status",
+      "fieldtype": "Select",
+      "label": "Reconciliation Status",
+      "options": "Pending\nMatched\nMismatch",
+      "default": "Pending",
+      "read_only": 1
+    },
+    {
+      "fieldname": "section_break_3",
+      "fieldtype": "Section Break",
+      "label": "Recent Transactions"
+    },
+    {
+      "fieldname": "transactions_html",
+      "fieldtype": "HTML",
+      "label": "Recent Transactions",
+      "options": "Recent Transactions"
+    },
+    {
+      "fieldname": "column_break_1",
+      "fieldtype": "Column Break"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "Accounts Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 0
+    },
+    {
+      "role": "Accounts User",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 0
+    }
+  ],
+  "title_field": "date",
+  "track_changes": 1,
+  "sort_order": "desc",
+  "sort_field": "date"
+}

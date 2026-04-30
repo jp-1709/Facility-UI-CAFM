@@ -3,7 +3,7 @@ import * as ToastPrimitives from "@radix-ui/react-toast";
 import { cva, type VariantProps } from "class-variance-authority";
 import { X } from "lucide-react";
 
-import { cn } from "@/lib/utils";
+import { cn } from "@/pages/finance/utils";
 
 const ToastProvider = ToastPrimitives.Provider;
 
@@ -98,6 +98,15 @@ type ToastProps = React.ComponentPropsWithoutRef<typeof Toast>;
 
 type ToastActionElement = React.ReactElement<typeof ToastAction>;
 
+import { toast as sonnerToast } from "sonner";
+
+const showToast = {
+  success: (message: string) => sonnerToast.success(message),
+  error: (message: string) => sonnerToast.error(message),
+  info: (message: string) => sonnerToast(message),
+  warning: (message: string) => sonnerToast.warning(message),
+};
+
 export {
   type ToastProps,
   type ToastActionElement,
@@ -108,4 +117,5 @@ export {
   ToastDescription,
   ToastClose,
   ToastAction,
+  showToast,
 };

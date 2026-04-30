@@ -1,18 +1,23 @@
-/**
- * Requests.tsx
- * Facility-UI — Service Request module
- * All list/link data is fetched dynamically from Frappe REST API.
- */
-
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Search, Plus, Filter, MapPin, Zap, CheckCircle2, ChevronDown, ChevronUp,
   MoreVertical, Pencil, Camera, Send, Link2, QrCode, Copy, X,
-  Clock, Mail, Smartphone, MessageSquare, FileText, ChevronRight,
+  Clock, Mail, Smartphone, MessageSquare, FileText, ChevronRight, ChevronLeft,
   RefreshCw, AlertCircle, Loader2, Activity, Plus as PlusIcon, RotateCcw,
-  ArrowRight,
+  ArrowRight, ExternalLink, Eye, Trash2, Settings, Globe, Shield,
+  Edit3, Package, Building2,
 } from "lucide-react";
 import { Switch } from "../components/ui/switch";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "../components/ui/sheet";
+import { showToast } from "../components/ui/toast";
+import { toast as sonnerToast } from "sonner";
 
 /* ═══════════════════════════════════════════
    FRAPPE API HELPERS
@@ -90,8 +95,24 @@ async function frappeUpdate<T>(doctype: string, name: string, payload: Partial<T
   return json.data as T;
 }
 
+async function frappeDelete(doctype: string, name: string): Promise<void> {
+  const res = await fetch(`${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "X-Frappe-CSRF-Token": getCsrfToken() },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.exc_type || `DELETE ${doctype} failed`);
+  }
+}
+
 function getCsrfToken(): string {
-  return (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || "";
+  if (typeof document === "undefined") return "";
+  const match = document.cookie.match(/(?:^|;)\s*(csrf_token|X-Frappe-CSRF-Token)=([^;]+)/);
+  const cookieToken = match ? decodeURIComponent(match[2]) : "";
+  const windowToken = typeof window !== "undefined" ? (window as any).csrf_token : "";
+  return cookieToken || windowToken || "";
 }
 
 /* ═══════════════════════════════════════════
@@ -104,9 +125,17 @@ interface SRListItem {
   sr_title: string;
   status: string;
   priority_actual: string;
-  property_code: string;
+  branch_code?: string;
+  branch_name?: string;
+  property_code?: string;
   property_name?: string;
+  business_type?: string;
   zone_code?: string;
+  zone_name?: string;
+  sub_zone_code?: string;
+  sub_zone_name?: string;
+  base_unit_code?: string;
+  base_unit_name?: string;
   client_code: string;
   client_name?: string;
   raised_date: string;
@@ -115,6 +144,9 @@ interface SRListItem {
   response_sla_status?: string;
   resolution_sla_status?: string;
   converted_to_wo?: 0 | 1;
+  photo?: string;
+  location_full_path?: string;
+  requested_by?: string;
 }
 
 interface SRDetail extends SRListItem {
@@ -136,20 +168,39 @@ interface SRDetail extends SRListItem {
   notification_email?: 0 | 1;
   notification_sms?: 0 | 1;
   special_instructions?: string;
-  work_description?: string;
+  raised_date: string;
+  wo_source: string;
   appointment_date?: string;
   preferred_datetime?: string;
+  location_full_path?: string;
+  work_description?: string;
   response_sla_target?: string;
-  response_sla_actual?: string;
   resolution_sla_target?: string;
+  business_type?: string;
+  response_sla_actual?: string;
   resolution_sla_actual?: string;
   customer_rating?: string;
   remarks?: string;
   initiator_type?: string;
   reporting_level?: string;
-  location_full_path?: string;
-  business_type?: string;
   amended_from?: string;
+}
+
+
+
+interface RequestPortal {
+  name: string;
+  portal_name: string;
+  description?: string;
+  preset_property?: string;
+  preset_property_name?: string;
+  preset_asset?: string;
+  preset_asset_name?: string;
+  notification_email?: string;
+  is_active?: 0 | 1;
+  portal_token: string;
+  creation?: string;
+  modified?: string;
 }
 
 interface FrappeOption { value: string; label: string; }
@@ -205,7 +256,7 @@ function useFrappeList<T>(
   return { data, loading, error, refetch: fetch_ };
 }
 
-function useFrappeDoc<T>(doctype: string, name: string, skip = false) {
+function useFrappeDoc<T>(doctype: string, name: string, refreshKey = 0, skip = false) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -220,7 +271,7 @@ function useFrappeDoc<T>(doctype: string, name: string, skip = false) {
       .catch((e: unknown) => { if (!cancelled) setError((e as Error).message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [doctype, name, skip]);
+  }, [doctype, name, skip, refreshKey]);
 
   return { data, loading, error };
 }
@@ -257,7 +308,8 @@ const priorityShort: Record<string, string> = {
 };
 const slaBadge: Record<string, string> = {
   Pending: "bg-amber-100 text-amber-700",
-  Met: "bg-emerald-100 text-emerald-700",
+  Met: "bg-emerald-100 text-emerald-700", // Handle legacy backend values
+  Fulfilled: "bg-emerald-100 text-emerald-700",
   Breached: "bg-red-100 text-red-700",
 };
 
@@ -322,10 +374,11 @@ function FrappeSelect({
 }
 
 function FrappeInput({
-  label, value, onChange, placeholder, required, type = "text",
+  label, value, onChange, placeholder, required, type = "text", disabled
 }: {
   label: string; value: string; onChange: (v: string) => void;
   placeholder?: string; required?: boolean; type?: string;
+  disabled?: boolean;
 }) {
   return (
     <div className="mb-4">
@@ -337,7 +390,8 @@ function FrappeInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+        disabled={disabled}
+        className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 disabled:bg-muted"
       />
     </div>
   );
@@ -363,25 +417,45 @@ function ErrorBanner({ message, onRetry }: { message: string; onRetry?: () => vo
   );
 }
 
-/* time-ago helper */
+/* Helper functions */
+function normalizeSlaStatus(status?: string): string {
+  if (!status) return status || "";
+  // Convert backend "Met" to display "Fulfilled"
+  return status === "Met" ? "Fulfilled" : status;
+}
+
 function timeAgo(dateStr: string, timeStr?: string): string {
-  const base = timeStr ? `${dateStr}T${timeStr}` : dateStr;
-  const diff = Date.now() - new Date(base).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days === 1) return "Yesterday";
-  return `${days}d ago`;
+  if (!dateStr) return "—";
+
+  try {
+    const base = timeStr ? `${dateStr}T${timeStr}` : dateStr;
+    const date = new Date(base);
+
+    // Check if date is valid
+    if (isNaN(date.getTime())) {
+      return "—";
+    }
+
+    const diff = Date.now() - date.getTime();
+    const mins = Math.floor(diff / 60_000);
+
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days === 1) return "Yesterday";
+    return `${days}d ago`;
+  } catch (error) {
+    return "—";
+  }
 }
 
 const ACTIVITY_ICON_CFG: Record<ActivityItem["action"], { icon: React.ReactNode; bg: string; text: string }> = {
-  updated:  { icon: <RotateCcw className="w-4 h-4" />, bg: "bg-sky-100",    text: "text-sky-600"    },
-  created:  { icon: <PlusIcon className="w-4 h-4" />,      bg: "bg-emerald-100",text: "text-emerald-600" },
-  worklog:  { icon: <FileText className="w-4 h-4" />,  bg: "bg-violet-100", text: "text-violet-600"  },
-  comment:  { icon: <MessageSquare className="w-4 h-4" />, bg: "bg-amber-100", text: "text-amber-600" },
-  status:   { icon: <Activity className="w-4 h-4" />,  bg: "bg-blue-100",   text: "text-blue-600"   },
+  updated: { icon: <RotateCcw className="w-4 h-4" />, bg: "bg-sky-100", text: "text-sky-600" },
+  created: { icon: <PlusIcon className="w-4 h-4" />, bg: "bg-emerald-100", text: "text-emerald-600" },
+  worklog: { icon: <FileText className="w-4 h-4" />, bg: "bg-violet-100", text: "text-violet-600" },
+  comment: { icon: <MessageSquare className="w-4 h-4" />, bg: "bg-amber-100", text: "text-amber-600" },
+  status: { icon: <Activity className="w-4 h-4" />, bg: "bg-blue-100", text: "text-blue-600" },
 };
 
 function parseVersionData(entry: VersionEntry): ActivityItem {
@@ -405,6 +479,566 @@ function parseVersionData(entry: VersionEntry): ActivityItem {
 
   return { id: entry.name, user: entry.owner || "System", action, timestamp: entry.creation, changes, message, subject };
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   QR CODE HELPER — inline SVG-based, zero dependencies
+   Encodes a URL as a standard QR code placeholder image via
+   the open-source api.qrserver.com endpoint
+═══════════════════════════════════════════════════════════════ */
+
+function QRDisplay({ url, size = 120 }: { url: string; size?: number }) {
+  const encoded = encodeURIComponent(url);
+  const src = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encoded}&margin=2&format=svg`;
+  return (
+    <img
+      src={src}
+      alt="QR Code"
+      width={size}
+      height={size}
+      className="rounded-xl border border-border shadow-sm bg-white"
+      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+    />
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PORTAL FORM — Create / Edit a Request Portal
+═══════════════════════════════════════════════════════════════ */
+
+interface PortalFormData {
+  portal_name: string;
+  description: string;
+  preset_property: string;
+  preset_asset: string;
+  notification_email: string;
+  is_active: boolean;
+}
+
+const BLANK_PORTAL: PortalFormData = {
+  portal_name: "", description: "", preset_property: "",
+  preset_asset: "", notification_email: "", is_active: true,
+};
+
+function PortalForm({
+  editPortal, onClose, onSaved,
+}: {
+  editPortal?: RequestPortal;
+  onClose: () => void;
+  onSaved: (portal: RequestPortal) => void;
+}) {
+  const [form, setForm] = useState<PortalFormData>(
+    editPortal
+      ? {
+        portal_name: editPortal.portal_name,
+        description: editPortal.description || "",
+        preset_property: editPortal.preset_property || "",
+        preset_asset: editPortal.preset_asset || "",
+        notification_email: editPortal.notification_email || "",
+        is_active: editPortal.is_active !== 0,
+      }
+      : BLANK_PORTAL
+  );
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const set = (k: keyof PortalFormData) => (v: string | boolean) =>
+    setForm((f) => ({ ...f, [k]: v }));
+
+  const { data: properties } = useFrappeList<{ name: string; property_name: string }>(
+    "Property", ["name", "property_name"], [["is_active", "=", "1"]], []
+  );
+  const { data: assets } = useFrappeList<{ name: string; asset_code: string; asset_name: string }>(
+    "CFAM Asset", ["name", "asset_code", "asset_name"],
+    form.preset_property ? [["property_code", "=", form.preset_property], ["asset_status", "=", "Active"]] : [["asset_status", "=", "Active"]],
+    [form.preset_property]
+  );
+
+  const handleSubmit = async () => {
+    if (!form.portal_name.trim()) { setErr("Portal name is required."); return; }
+    setSaving(true); setErr(null);
+    try {
+      const token = editPortal?.portal_token || `portal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const payload: Partial<RequestPortal> = {
+        portal_name: form.portal_name.trim(),
+        description: form.description || undefined,
+        preset_property: form.preset_property || undefined,
+        preset_asset: form.preset_asset || undefined,
+        notification_email: form.notification_email || undefined,
+        is_active: (form.is_active ? 1 : 0) as 0 | 1,
+        portal_token: token,
+      };
+      let result: RequestPortal;
+      if (editPortal) {
+        result = await frappeUpdate<RequestPortal>("Request Portal", editPortal.name, payload);
+      } else {
+        result = await frappeCreate<RequestPortal>("Request Portal", payload);
+      }
+      onSaved(result);
+    } catch (e: unknown) {
+      setErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-base font-bold text-foreground">
+          {editPortal ? "Edit Portal" : "Create Request Portal"}
+        </h3>
+        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
+          <X className="w-4 h-4 text-muted-foreground" />
+        </button>
+      </div>
+
+      {err && (
+        <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-destructive/10 border border-destructive/20 rounded-lg text-xs text-destructive">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {err}
+        </div>
+      )}
+
+      <div className="space-y-4">
+        {/* Portal Name */}
+        <div>
+          <label className="block text-xs font-semibold text-foreground mb-1.5">
+            Portal Name <span className="text-destructive">*</span>
+          </label>
+          <input
+            value={form.portal_name}
+            onChange={(e) => set("portal_name")(e.target.value)}
+            placeholder="e.g. Lobby Request Portal"
+            className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+
+        {/* Description */}
+        <div>
+          <label className="block text-xs font-semibold text-foreground mb-1.5">Description</label>
+          <textarea
+            value={form.description}
+            onChange={(e) => set("description")(e.target.value)}
+            rows={2}
+            placeholder="Describe what this portal is for…"
+            className="w-full px-3 py-2 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+          />
+        </div>
+
+        {/* Preset Location */}
+        <div>
+          <label className="block text-xs font-semibold text-foreground mb-1.5">
+            <MapPin className="w-3 h-3 inline mr-1 text-muted-foreground" />
+            Preset Location
+          </label>
+          <select
+            value={form.preset_property}
+            onChange={(e) => { set("preset_property")(e.target.value); set("preset_asset")(""); }}
+            className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="">Any location (not preset)</option>
+            {properties.map((p) => (
+              <option key={p.name} value={p.name}>{p.property_name}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Preset Asset */}
+        <div>
+          <label className="block text-xs font-semibold text-foreground mb-1.5">
+            <Package className="w-3 h-3 inline mr-1 text-muted-foreground" />
+            Preset Asset
+          </label>
+          <select
+            value={form.preset_asset}
+            onChange={(e) => set("preset_asset")(e.target.value)}
+            className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+            disabled={!form.preset_property}
+          >
+            <option value="">Any asset (not preset)</option>
+            {assets.map((a) => (
+              <option key={a.name} value={a.name}>{a.asset_code} — {a.asset_name}</option>
+            ))}
+          </select>
+          {!form.preset_property && (
+            <p className="text-[10px] text-muted-foreground mt-1">Select a location first to filter assets.</p>
+          )}
+        </div>
+
+        {/* Notification Email */}
+        <div>
+          <label className="block text-xs font-semibold text-foreground mb-1.5">
+            <Mail className="w-3 h-3 inline mr-1 text-muted-foreground" />
+            Notification Email
+          </label>
+          <input
+            type="email"
+            value={form.notification_email}
+            onChange={(e) => set("notification_email")(e.target.value)}
+            placeholder="ops-team@yourcompany.com"
+            className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          <p className="text-[10px] text-muted-foreground mt-1">Receive an email each time someone submits via this portal.</p>
+        </div>
+
+        {/* Active toggle */}
+        <div className="flex items-center justify-between p-3 rounded-xl bg-muted/20 border border-border">
+          <div className="flex items-center gap-2">
+            <Globe className="w-4 h-4 text-muted-foreground" />
+            <div>
+              <p className="text-xs font-semibold text-foreground">Portal Active</p>
+              <p className="text-[10px] text-muted-foreground">Inactive portals reject submissions</p>
+            </div>
+          </div>
+          <button
+            onClick={() => set("is_active")(!form.is_active)}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${form.is_active ? "bg-primary" : "bg-muted-foreground/30"}`}
+          >
+            <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform shadow ${form.is_active ? "translate-x-4" : "translate-x-0.5"}`} />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-border">
+        <button
+          onClick={onClose}
+          className="flex-1 py-2.5 border border-border rounded-xl text-sm font-semibold text-foreground hover:bg-muted transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSubmit}
+          disabled={saving}
+          className="flex-1 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-bold hover:bg-primary/90 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
+        >
+          {saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : editPortal ? "Update Portal" : "Create Portal"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PORTAL CARD — shows each portal in the drawer
+═══════════════════════════════════════════════════════════════ */
+
+const PORTAL_BASE_URL = typeof window !== "undefined" ? `${window.location.origin}/portal` : "/portal";
+
+function PortalCard({
+  portal,
+  onEdit,
+  onDelete,
+  onToggle,
+}: {
+  portal: RequestPortal;
+  onEdit: (p: RequestPortal) => void;
+  onDelete: (name: string) => void;
+  onToggle: (p: RequestPortal) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [showQR, setShowQR] = useState(false);
+  const portalUrl = `${PORTAL_BASE_URL}/${portal.portal_token}`;
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(portalUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* fallback for http */
+      const ta = document.createElement("textarea");
+      ta.value = portalUrl;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className={`rounded-xl border ${portal.is_active === 0 ? "border-border bg-muted/20 opacity-70" : "border-border bg-card"} p-4 mb-3 transition-all`}>
+      <div className="flex items-start gap-3">
+        {/* QR icon / preview toggle */}
+        <button
+          onClick={() => setShowQR((v) => !v)}
+          className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 border transition-all ${showQR ? "border-primary bg-primary/5" : "border-border bg-muted/40 hover:bg-muted"}`}
+          title="Show / hide QR code"
+        >
+          <QrCode className={`w-5 h-5 ${showQR ? "text-primary" : "text-muted-foreground"}`} />
+        </button>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-foreground truncate">{portal.portal_name}</p>
+              {portal.description && (
+                <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{portal.description}</p>
+              )}
+            </div>
+            {/* active indicator */}
+            <span className={`shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${portal.is_active !== 0 ? "bg-emerald-100 text-emerald-700" : "bg-gray-100 text-gray-500"}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${portal.is_active !== 0 ? "bg-emerald-500" : "bg-gray-400"}`} />
+              {portal.is_active !== 0 ? "Active" : "Inactive"}
+            </span>
+          </div>
+
+          {/* preset chips */}
+          {(portal.preset_property_name || portal.preset_asset_name) && (
+            <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+              {portal.preset_property_name && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 border border-blue-200 text-[10px] font-semibold text-blue-700">
+                  <MapPin className="w-2.5 h-2.5" /> {portal.preset_property_name}
+                </span>
+              )}
+              {portal.preset_asset_name && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-50 border border-violet-200 text-[10px] font-semibold text-violet-700">
+                  <Package className="w-2.5 h-2.5" /> {portal.preset_asset_name}
+                </span>
+              )}
+              {portal.notification_email && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 border border-amber-200 text-[10px] font-semibold text-amber-700">
+                  <Mail className="w-2.5 h-2.5" /> Notify
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* actions */}
+          <div className="flex items-center gap-1.5 mt-3 flex-wrap">
+            <button
+              onClick={copyLink}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-colors"
+            >
+              {copied ? <><CheckCircle2 className="w-3 h-3 text-emerald-600" /> Copied!</> : <><Copy className="w-3 h-3" /> Copy Link</>}
+            </button>
+            <a
+              href={portalUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-colors"
+            >
+              <ExternalLink className="w-3 h-3" /> Open
+            </a>
+            <button
+              onClick={() => onEdit(portal)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-border text-xs font-medium text-foreground hover:bg-muted transition-colors"
+            >
+              <Pencil className="w-3 h-3" /> Edit
+            </button>
+            <button
+              onClick={() => onToggle(portal)}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-medium transition-colors ${portal.is_active !== 0 ? "border-amber-200 text-amber-700 hover:bg-amber-50" : "border-emerald-200 text-emerald-700 hover:bg-emerald-50"}`}
+            >
+              {portal.is_active !== 0 ? <><Eye className="w-3 h-3" /> Deactivate</> : <><Globe className="w-3 h-3" /> Activate</>}
+            </button>
+            <button
+              onClick={() => onDelete(portal.name)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-red-200 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors ml-auto"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* QR Code panel */}
+      {showQR && (
+        <div className="mt-4 pt-4 border-t border-border flex flex-col items-center gap-3">
+          <QRDisplay url={portalUrl} size={140} />
+          <div className="text-center">
+            <p className="text-[10px] font-mono text-muted-foreground bg-muted px-3 py-1.5 rounded-lg break-all">{portalUrl}</p>
+            <p className="text-[9px] text-muted-foreground mt-1">Scan to open portal · No login required</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   REQUEST PORTALS DRAWER — full MaintainX-style
+═══════════════════════════════════════════════════════════════ */
+
+function RequestPortalsDrawer({ onClose }: { onClose: () => void }) {
+  const { data: portals, loading, error, refetch } = useFrappeList<RequestPortal>(
+    "Request Portal",
+    ["name", "portal_name", "description", "preset_property", "preset_property_name",
+      "preset_asset", "preset_asset_name", "notification_email", "is_active", "portal_token", "creation"],
+    [],
+    []
+  );
+  const [editPortal, setEditPortal] = useState<RequestPortal | undefined>(undefined);
+  const [showForm, setShowForm] = useState(false);
+  const [deletingName, setDeletingName] = useState<string | null>(null);
+  const [searchPortal, setSearchPortal] = useState("");
+
+  const filteredPortals = useMemo(() =>
+    portals.filter((p) =>
+      !searchPortal ||
+      p.portal_name.toLowerCase().includes(searchPortal.toLowerCase()) ||
+      (p.description || "").toLowerCase().includes(searchPortal.toLowerCase())
+    ),
+    [portals, searchPortal]
+  );
+
+  const handleDelete = async (name: string) => {
+    if (!window.confirm("Delete this portal? Existing links will stop working.")) return;
+    setDeletingName(name);
+    try {
+      await frappeDelete("Request Portal", name);
+      refetch();
+    } catch { /* silent */ }
+    finally { setDeletingName(null); }
+  };
+
+  const handleToggle = async (portal: RequestPortal) => {
+    try {
+      await frappeUpdate("Request Portal", portal.name, {
+        is_active: (portal.is_active !== 0 ? 0 : 1) as 0 | 1,
+      } as Partial<RequestPortal>);
+      refetch();
+    } catch { /* silent */ }
+  };
+
+  const handleSaved = (saved: RequestPortal) => {
+    setShowForm(false);
+    setEditPortal(undefined);
+    refetch();
+  };
+
+  return (
+    <>
+      {/* backdrop */}
+      <div className="fixed inset-0 bg-black/40 z-40" onClick={onClose} />
+
+      {/* drawer */}
+      <div className="fixed right-0 top-0 h-full w-[460px] bg-card border-l border-border z-50 shadow-2xl flex flex-col">
+        {/* header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center">
+              <QrCode className="w-4 h-4 text-primary" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-foreground">Request Portals</h2>
+              <p className="text-[11px] text-muted-foreground">{portals.length} portal{portals.length !== 1 ? "s" : ""} configured</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={refetch} className="p-1.5 rounded-lg hover:bg-muted transition-colors" title="Refresh">
+              <RefreshCw className={`w-4 h-4 text-muted-foreground ${loading ? "animate-spin" : ""}`} />
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
+              <X className="w-5 h-5 text-muted-foreground" />
+            </button>
+          </div>
+        </div>
+
+        {/* form mode */}
+        {showForm ? (
+          <div className="flex-1 overflow-y-auto">
+            <PortalForm
+              editPortal={editPortal}
+              onClose={() => { setShowForm(false); setEditPortal(undefined); }}
+              onSaved={handleSaved}
+            />
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto flex flex-col">
+            {/* description + features */}
+            <div className="px-5 pt-4 pb-3 border-b border-border/50">
+              <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                Request Portals are customizable web-based forms where <strong>anyone</strong> can submit a
+                request for your facility — no app or login required.
+              </p>
+              <div className="grid grid-cols-1 gap-1.5 mb-4">
+                {[
+                  { icon: <Link2 className="w-3.5 h-3.5 text-primary" />, text: "Shared via unique link or QR code" },
+                  { icon: <MapPin className="w-3.5 h-3.5 text-primary" />, text: "Linked to a preset Asset or Location" },
+                  { icon: <Mail className="w-3.5 h-3.5 text-primary" />, text: "Receive email notifications for each submission" },
+                  { icon: <Shield className="w-3.5 h-3.5 text-primary" />, text: "Activate / deactivate without deleting the link" },
+                ].map(({ icon, text }) => (
+                  <div key={text} className="flex items-center gap-2 text-xs text-foreground">
+                    {icon} {text}
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={() => { setEditPortal(undefined); setShowForm(true); }}
+                className="w-full py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-bold hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 shadow-sm"
+              >
+                <Plus className="w-4 h-4" /> Create Request Portal
+              </button>
+            </div>
+
+            {/* search portals */}
+            {portals.length > 0 && (
+              <div className="px-5 py-3 border-b border-border/50">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                  <input
+                    value={searchPortal}
+                    onChange={(e) => setSearchPortal(e.target.value)}
+                    placeholder="Search portals…"
+                    className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* portal list */}
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {loading && (
+                <div className="flex items-center justify-center py-10">
+                  <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                </div>
+              )}
+              {error && (
+                <div className="px-4 py-3 bg-destructive/10 border border-destructive/20 rounded-lg text-xs text-destructive flex items-center gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {error}
+                </div>
+              )}
+              {!loading && !error && filteredPortals.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-14 gap-4 text-muted-foreground">
+                  <div className="w-16 h-16 rounded-2xl bg-muted/60 flex items-center justify-center">
+                    <QrCode className="w-8 h-8 opacity-50" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-semibold text-foreground">
+                      {searchPortal ? "No portals match" : "No portals yet"}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {searchPortal ? "Try a different search" : "Create your first portal above"}
+                    </p>
+                  </div>
+                </div>
+              )}
+              {!loading && filteredPortals.map((portal) => (
+                <PortalCard
+                  key={portal.name}
+                  portal={portal}
+                  onEdit={(p) => { setEditPortal(p); setShowForm(true); }}
+                  onDelete={handleDelete}
+                  onToggle={handleToggle}
+                />
+              ))}
+            </div>
+
+            {/* stats footer */}
+            {!loading && portals.length > 0 && (
+              <div className="px-5 py-3 border-t border-border/50 flex items-center gap-4 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" />{portals.filter((p) => p.is_active !== 0).length} active</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-gray-300" />{portals.filter((p) => p.is_active === 0).length} inactive</span>
+                <span className="ml-auto">{portals.length} total portals</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 
 function ActivitySidebar({ srName, onClose }: { srName: string; onClose: () => void }) {
   const [items, setItems] = useState<ActivityItem[]>([]);
@@ -571,51 +1205,93 @@ function ActivitySidebar({ srName, onClose }: { srName: string; onClose: () => v
    NEW REQUEST FORM
 ═══════════════════════════════════════════ */
 
+
 interface NewSRForm {
-  sr_title: string;
-  wo_source: string;
-  initiator_type: string;
+  sr_title: string; wo_source: string; initiator_type: string;
+  initiator_client: string; requested_by: string;
   raised_date: string;
-  raised_time: string;
-  client_code: string;
-  contract_code: string;
-  property_code: string;
-  zone_code: string;
-  sub_zone_code: string;
-  base_unit_code: string;
-  reporting_level: string;
-  asset_code: string;
-  service_group: string;
-  fault_category: string;
-  fault_code: string;
-  priority_actual: string;
-  approval_criticality: string;
-  reported_by: string;
-  contact_phone: string;
-  requester_email: string;
-  special_instructions: string;
-  notification_email: boolean;
-  notification_sms: boolean;
-  appointment_date: string;
-  preferred_datetime: string;
+  raised_time: string; client_code: string; contract_code: string;
+  branch_code: string; branch_name: string;
+  property_code: string; property_name: string;
+  zone_code: string; zone_name: string;
+  sub_zone_code: string; sub_zone_name: string;
+  base_unit_code: string; base_unit_name: string;
+  reporting_level: string; location_full_path: string;
+  asset_code: string; service_group: string; fault_category: string; fault_code: string;
+  priority_actual: string; approval_criticality: string; reported_by: string; contact_phone: string;
+  requester_email: string; special_instructions: string; notification_email: boolean;
+  notification_sms: boolean; appointment_date: string; preferred_datetime: string;
+  _pending_photo?: File;
 }
 
 const BLANK_FORM: NewSRForm = {
-  sr_title: "", wo_source: "", initiator_type: "", raised_date: new Date().toISOString().split("T")[0],
-  raised_time: "", client_code: "", contract_code: "", property_code: "",
-  zone_code: "", sub_zone_code: "", base_unit_code: "", reporting_level: "",
+  sr_title: "", wo_source: "Portal", initiator_type: "Client",
+  initiator_client: "", requested_by: "",
+  raised_date: new Date().toISOString().split("T")[0],
+  raised_time: new Date().toTimeString().slice(0, 5), client_code: "", contract_code: "",
+  branch_code: "", branch_name: "", property_code: "", property_name: "",
+  zone_code: "", zone_name: "", sub_zone_code: "", sub_zone_name: "",
+  base_unit_code: "", base_unit_name: "",
+  location_full_path: "", reporting_level: "Property",
   asset_code: "", service_group: "", fault_category: "", fault_code: "",
-  priority_actual: "", approval_criticality: "", reported_by: "", contact_phone: "",
+  priority_actual: "P3 - Medium", approval_criticality: "Normal", reported_by: "", contact_phone: "",
   requester_email: "", special_instructions: "", notification_email: true,
   notification_sms: false, appointment_date: "", preferred_datetime: "",
 };
 
-function NewRequestForm({
-  onClose, onCreated,
-}: { onClose: () => void; onCreated: (name: string) => void }) {
+function RequestForm({
+  editName, onClose, onSaved,
+}: { editName?: string; onClose: () => void; onSaved: (name: string) => void }) {
   const [form, setForm] = useState<NewSRForm>(BLANK_FORM);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [step, setStep] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
+
+  const { data: existingDoc } = useFrappeDoc<SRDetail>("Service Request", editName || "");
+  useEffect(() => {
+    if (editName && existingDoc) {
+      setForm({
+        sr_title: existingDoc.sr_title || "",
+        wo_source: existingDoc.wo_source || "",
+        initiator_type: existingDoc.initiator_type || "",
+        initiator_client: (existingDoc as any).initiator_client || "",
+        requested_by: (existingDoc as any).requested_by || "",
+        raised_date: existingDoc.raised_date || new Date().toISOString().split("T")[0],
+        raised_time: existingDoc.raised_time ? (existingDoc.raised_time.split(':').map(p => p.padStart(2, '0')).join(':')) : "",
+        client_code: existingDoc.client_code || "",
+        contract_code: existingDoc.contract_code || "",
+        branch_code: existingDoc.branch_code || "",
+        branch_name: existingDoc.branch_name || "",
+        property_code: existingDoc.property_code || "",
+        property_name: existingDoc.property_name || "",
+        zone_code: existingDoc.zone_code || "",
+        zone_name: existingDoc.zone_name || "",
+        sub_zone_code: existingDoc.sub_zone_code || "",
+        sub_zone_name: existingDoc.sub_zone_name || "",
+        base_unit_code: existingDoc.base_unit_code || "",
+        base_unit_name: existingDoc.base_unit_name || "",
+        location_full_path: existingDoc.location_full_path || "",
+        reporting_level: existingDoc.reporting_level || "",
+        asset_code: existingDoc.asset_code || "",
+        service_group: existingDoc.service_group || "",
+        fault_category: existingDoc.fault_category || "",
+        fault_code: existingDoc.fault_code || "",
+        priority_actual: existingDoc.priority_actual || "",
+        approval_criticality: existingDoc.approval_criticality || "",
+        reported_by: existingDoc.reported_by || "",
+        contact_phone: existingDoc.contact_phone || "",
+        requester_email: existingDoc.requester_email || "",
+        special_instructions: existingDoc.special_instructions || "",
+        notification_email: !!existingDoc.notification_email,
+        notification_sms: !!existingDoc.notification_sms,
+        appointment_date: existingDoc.appointment_date || "",
+        preferred_datetime: existingDoc.preferred_datetime || "",
+      });
+      if (existingDoc.photo) setPreviewPhoto(existingDoc.photo);
+    }
+  }, [editName, existingDoc]);
 
   const set = (key: keyof NewSRForm) => (val: string | boolean) =>
     setForm((f) => ({ ...f, [key]: val }));
@@ -629,16 +1305,19 @@ function NewRequestForm({
     form.client_code ? [["client_code", "=", form.client_code], ["status", "=", "Active"]] : [["status", "=", "Active"]],
     [form.client_code]
   );
-  const { data: properties } = useFrappeList<{ name: string; property_name: string }>(
-    "Property", ["name", "property_name"],
+  const { data: branches } = useFrappeList<{ name: string; branch_name: string; branch_code: string }>(
+    "Branch", ["name", "branch_name", "branch_code"], [["is_active", "=", "1"]], []
+  );
+  const { data: properties } = useFrappeList<{ name: string; property_name: string; property_code: string }>(
+    "Property", ["name", "property_name", "property_code"],
     [
-      ...(form.client_code ? [["client_code", "=", form.client_code] as [string, string, string]] : []),
+      ...(form.branch_code ? [["branch_code", "=", form.branch_code] as [string, string, string]] : []),
       ["is_active", "=", "1"],
     ],
-    [form.client_code]
+    [form.branch_code]
   );
-  const { data: zones } = useFrappeList<{ name: string; zone_name: string }>(
-    "Zone", ["name", "zone_name"],
+  const { data: zones } = useFrappeList<{ name: string; zone_name: string; zone_code: string }>(
+    "Zone", ["name", "zone_name", "zone_code"],
     [
       ...(form.property_code ? [["property_code", "=", form.property_code] as [string, string, string]] : []),
       ["is_active", "=", "1"],
@@ -646,8 +1325,8 @@ function NewRequestForm({
     [form.property_code],
     !form.property_code
   );
-  const { data: subZones } = useFrappeList<{ name: string; sub_zone_name: string }>(
-    "Sub Zone", ["name", "sub_zone_name"],
+  const { data: subZones } = useFrappeList<{ name: string; sub_zone_name: string; sub_zone_code: string }>(
+    "Sub Zone", ["name", "sub_zone_name", "sub_zone_code"],
     [
       ...(form.zone_code ? [["zone_code", "=", form.zone_code] as [string, string, string]] : []),
       ["is_active", "=", "1"],
@@ -655,8 +1334,8 @@ function NewRequestForm({
     [form.zone_code],
     !form.zone_code
   );
-  const { data: baseUnits } = useFrappeList<{ name: string; base_unit_name: string }>(
-    "Base Unit", ["name", "base_unit_name"],
+  const { data: baseUnits } = useFrappeList<{ name: string; base_unit_name: string; base_unit_code: string }>(
+    "Base Unit", ["name", "base_unit_name", "base_unit_code"],
     [
       ...(form.sub_zone_code ? [["sub_zone_code", "=", form.sub_zone_code] as [string, string, string]] : []),
       ["is_active", "=", "1"],
@@ -677,9 +1356,59 @@ function NewRequestForm({
     "Fault Code", ["name"], [], []
   );
 
+  /* dynamic path update */
+  useEffect(() => {
+    const parts: string[] = [];
+    let bName = "", pName = "", zName = "", szName = "", buName = "";
+
+    if (form.branch_code) {
+      const b = (branches as any[]).find(x => x.name === form.branch_code);
+      if (b) bName = b.branch_name;
+    }
+    if (form.property_code) {
+      const p = (properties as any[]).find(x => x.name === form.property_code);
+      if (p) { pName = p.property_name; parts.push(pName); }
+    }
+    if (form.zone_code) {
+      const z = (zones as any[]).find(x => x.name === form.zone_code);
+      if (z) { zName = z.zone_name; parts.push(zName); }
+    }
+    if (form.sub_zone_code) {
+      const s = (subZones as any[]).find(x => x.name === form.sub_zone_code);
+      if (s) { szName = s.sub_zone_name; parts.push(szName); }
+    }
+    if (form.base_unit_code) {
+      const bu = (baseUnits as any[]).find(x => x.name === form.base_unit_code);
+      if (bu) { buName = bu.base_unit_name; parts.push(buName); }
+    }
+
+    const newPath = parts.join(" / ");
+    if (
+      newPath !== form.location_full_path ||
+      bName !== form.branch_name ||
+      pName !== form.property_name ||
+      zName !== form.zone_name ||
+      szName !== form.sub_zone_name ||
+      buName !== form.base_unit_name
+    ) {
+      setForm(f => ({
+        ...f,
+        location_full_path: newPath,
+        branch_name: bName,
+        property_name: pName,
+        zone_name: zName,
+        sub_zone_name: szName,
+        base_unit_name: buName,
+      }));
+    }
+  }, [form.branch_code, form.property_code, form.zone_code, form.sub_zone_code, form.base_unit_code, branches, properties, zones, subZones, baseUnits]);
+
   /* cascade resets */
   const handleClientChange = (v: string) => {
-    setForm((f) => ({ ...f, client_code: v, contract_code: "", property_code: "", zone_code: "", sub_zone_code: "", base_unit_code: "", asset_code: "" }));
+    setForm((f) => ({ ...f, client_code: v, contract_code: "", branch_code: "", property_code: "", zone_code: "", sub_zone_code: "", base_unit_code: "", asset_code: "" }));
+  };
+  const handleBranchChange = (v: string) => {
+    setForm((f) => ({ ...f, branch_code: v, property_code: "", zone_code: "", sub_zone_code: "", base_unit_code: "", asset_code: "" }));
   };
   const handlePropertyChange = (v: string) => {
     setForm((f) => ({ ...f, property_code: v, zone_code: "", sub_zone_code: "", base_unit_code: "", asset_code: "" }));
@@ -690,6 +1419,28 @@ function NewRequestForm({
   const handleSubZoneChange = (v: string) => {
     setForm((f) => ({ ...f, sub_zone_code: v, base_unit_code: "" }));
   };
+  const { data: users } = useFrappeList<{ name: string; full_name?: string }>(
+    "User", ["name", "full_name"], [["enabled", "=", "1"]], []
+  );
+  const { data: resources } = useFrappeList<{ name: string; resource_name: string }>(
+    "Resource", ["name", "resource_name"], [], []
+  );
+
+  const handleInitiatorTypeChange = async (v: string) => {
+    setForm(f => ({ ...f, initiator_type: v, initiator_client: "", requested_by: "" }));
+    if (v === "System") {
+      // In a real app, get current user name from session
+      setForm(f => ({ ...f, requested_by: "Current User" }));
+    }
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { setSaveError("File size exceeds 5MB"); return; }
+    setPreviewPhoto(URL.createObjectURL(file));
+    setForm(f => ({ ...f, _pending_photo: file }));
+  };
 
   const handleSubmit = async () => {
     if (!form.sr_title || !form.client_code || !form.property_code || !form.priority_actual || !form.wo_source) {
@@ -699,200 +1450,386 @@ function NewRequestForm({
     setSaving(true);
     setSaveError(null);
     try {
+      const { _pending_photo, ...formToSave } = form;
+
       const payload = {
-        ...form,
-        sr_number: generateID("SR"),
-        notification_email: (form.notification_email ? 1 : 0) as 0 | 1,
-        notification_sms: (form.notification_sms ? 1 : 0) as 0 | 1,
-        status: "Open",
+        ...formToSave,
+        ...(editName ? {} : { sr_number: generateID("SR") }),
+        notification_email: (formToSave.notification_email ? 1 : 0) as 0 | 1,
+        notification_sms: (formToSave.notification_sms ? 1 : 0) as 0 | 1,
+        status: editName ? undefined : "Open",
       };
-      const doc = await frappeCreate<SRDetail>("Service Request", payload);
-      onCreated(doc.name);
+
+      if (!form._pending_photo && !previewPhoto) {
+        (payload as any).photo = "";
+      }
+
+      const doc = editName
+        ? await frappeUpdate<SRDetail>("Service Request", editName, payload)
+        : await frappeCreate<SRDetail>("Service Request", payload);
+
+      // 🎉 Professional toast notification for service request creation/update
+      if (editName) {
+        // Service Request Updated - Show professional success animation
+        sonnerToast.success(
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <div className="w-10 h-10 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center border border-white/20">
+                <RotateCcw className="w-5 h-5 text-white" />
+              </div>
+              <div className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-emerald-400 rounded-full animate-pulse border-2 border-white" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="font-semibold text-sm text-white leading-tight">Service Request Updated</span>
+              <span className="text-xs text-white/80 leading-tight">#{doc.name} • Updated successfully</span>
+            </div>
+          </div>,
+          {
+            duration: 4000,
+            position: 'top-right',
+            icon: null,
+            style: {
+              background: 'linear-gradient(135deg, #1e40af 0%, #3730a3 100%)',
+              color: 'white',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '16px',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+              padding: '20px',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+            },
+            className: 'animate-slide-in-right',
+          }
+        );
+      } else {
+        // Service Request Created - Show professional celebration animation
+        sonnerToast.success(
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <div className="w-12 h-12 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center border border-white/20">
+                <Send className="w-6 h-6 text-white" />
+              </div>
+              <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full animate-pulse border-2 border-white" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="font-semibold text-base text-white leading-tight">Service Request Created</span>
+              <span className="text-sm text-white/80 leading-tight">#{doc.name} • Submitted successfully</span>
+            </div>
+          </div>,
+          {
+            duration: 5000,
+            position: 'top-right',
+            icon: null,
+            style: {
+              background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+              color: 'white',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '16px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+              padding: '24px',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+            },
+            className: 'animate-bounce-in',
+          }
+        );
+      }
+
+      if (form._pending_photo) {
+        setUploading(true);
+        const uploadFormData = new FormData();
+        uploadFormData.append('file', form._pending_photo, form._pending_photo.name);
+        uploadFormData.append('is_private', '0');
+        uploadFormData.append('folder', 'Home/Attachments');
+        uploadFormData.append('doctype', 'Service Request');
+        uploadFormData.append('docname', doc.name);
+        uploadFormData.append('fieldname', 'photo');
+
+        const r = await fetch('/api/method/upload_file', {
+          method: 'POST', body: uploadFormData, credentials: 'include',
+          headers: { 'X-Frappe-CSRF-Token': getCsrfToken() }
+        });
+
+        if (r.ok) {
+          const upJson = await r.json();
+          const msg = upJson.message;
+          const newUrl: string | null = msg && typeof msg === 'object'
+            ? (msg.file_url ?? msg.file_name ?? null)
+            : typeof msg === 'string' ? msg : null;
+
+          if (newUrl) {
+            try {
+              await frappeUpdate('Service Request', doc.name, { photo: newUrl });
+            } catch (err) {
+              console.warn('Field update failed after upload:', err);
+            }
+          }
+        } else {
+          throw new Error('Image upload failed');
+        }
+        setUploading(false);
+      }
+
+      onSaved(doc.name);
     } catch (e: unknown) {
       setSaveError((e as Error).message);
     } finally {
-      setSaving(false);
+      setSaving(false); setUploading(false);
     }
   };
 
   const toOpts = (arr: { name: string; label?: string }[], labelKey?: string): FrappeOption[] =>
     arr.map((r) => ({ value: r.name, label: (r as Record<string, string>)[labelKey || ""] || r.name }));
 
+  const STEPS = ["Details", "Location", "Scheduling", "Photos"];
+
   return (
-    <div className="max-w-2xl mx-auto py-6 px-6 fade-in">
-      {/* header */}
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-bold text-foreground">New Service Request</h2>
-        <button onClick={onClose} className="p-1 hover:bg-muted rounded">
-          <X className="w-5 h-5" />
-        </button>
+    <div className="max-w-2xl mx-auto py-4 px-6 fade-in">
+      {/* premium step indicator */}
+      <div className="flex items-center gap-0 mb-8 rounded-xl overflow-hidden border border-border shadow-sm">
+        {STEPS.map((s, i) => (
+          <button key={s} onClick={() => setStep(i)}
+            className={`flex-1 py-2.5 text-xs font-bold text-center transition-all border-r border-border last:border-r-0
+              ${step === i ? "bg-primary text-primary-foreground" : step > i ? "bg-primary/10 text-primary" : "bg-muted/30 text-muted-foreground hover:bg-muted"}`}>
+            <span className="mr-1.5 opacity-60">{i + 1}</span>{s}
+          </button>
+        ))}
       </div>
 
       {saveError && <ErrorBanner message={saveError} onRetry={() => setSaveError(null)} />}
 
-      {/* ── Section: Request Details ── */}
-      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3 mt-4">Request Details</p>
+      {/* Step 0 - Details */}
+      {step === 0 && (
+        <div className="fade-in space-y-5">
+          <div>
+            <label className="block text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-2 px-1">Request Subject</label>
+            <input value={form.sr_title} onChange={e => set("sr_title")(e.target.value)} placeholder="e.g. Broken AC in Room 302..."
+              className="w-full px-4 py-3 border border-border rounded-xl text-lg font-semibold bg-background focus:outline-none focus:ring-2 focus:ring-primary/20 text-foreground" />
+          </div>
 
-      <FrappeInput label="Subject / Title" value={form.sr_title} onChange={set("sr_title")} placeholder="Enter request subject…" required />
+          <div className="grid grid-cols-2 gap-4">
+            <FrappeSelect
+              label="Request Mode" value={form.wo_source} onChange={set("wo_source")} required
+              options={["Portal", "Phone", "Email", "Mobile App", "On-Site", "System"].map((v) => ({ value: v, label: v }))}
+            />
+            <FrappeSelect
+              label="Initiator Type" value={form.initiator_type} onChange={handleInitiatorTypeChange} required
+              options={["Helpdesk", "Client", "Technician", "System", "Inspection"].map((v) => ({ value: v, label: v }))}
+            />
+          </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <FrappeSelect
-          label="Request Mode" value={form.wo_source} onChange={set("wo_source")} required
-          options={["Portal", "Phone", "Email", "Mobile App", "On-Site", "System"].map((v) => ({ value: v, label: v }))}
-        />
-        <FrappeSelect
-          label="Initiator Type" value={form.initiator_type} onChange={set("initiator_type")}
-          options={["Helpdesk", "Client", "Technician", "System", "Inspection"].map((v) => ({ value: v, label: v }))}
-        />
-      </div>
+          <div className="space-y-4">
+            {form.initiator_type === "Client" && (
+              <FrappeSelect
+                label="Client Name" value={form.initiator_client}
+                onChange={(v) => {
+                  const c = (clients as any[]).find(x => x.name === v);
+                  setForm(f => ({ ...f, initiator_client: v, requested_by: c?.client_name || v }));
+                }}
+                options={toOpts(clients, "client_name")} required
+              />
+            )}
 
-      <div className="grid grid-cols-2 gap-3">
-        <FrappeInput label="Raised Date" value={form.raised_date} onChange={set("raised_date")} type="date" required />
-        <FrappeInput label="Raised Time" value={form.raised_time} onChange={set("raised_time")} type="time" />
-      </div>
+            {(form.initiator_type === "Helpdesk" || form.initiator_type === "Inspection") && (
+              <FrappeSelect
+                label={`Select ${form.initiator_type} User`} value={form.requested_by}
+                onChange={(v) => set("requested_by")(v)}
+                options={toOpts(users.map(u => ({ name: u.full_name || u.name, label: u.full_name || u.name })), "label")} required
+              />
+            )}
 
-      {/* ── Section: Priority ── */}
-      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3 mt-2">Priority</p>
-      <div className="mb-4 flex gap-2">
-        {["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"].map((p) => (
-          <button key={p} onClick={() => set("priority_actual")(p)}
-            className={`px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-all flex-1 ${form.priority_actual === p ? "border-primary bg-primary text-primary-foreground" : "border-border text-foreground hover:border-primary"}`}>
-            {priorityShort[p]}
-          </button>
-        ))}
-      </div>
-      <FrappeSelect
-        label="Approval Criticality" value={form.approval_criticality} onChange={set("approval_criticality")}
-        options={["Normal", "High", "Critical", "Emergency"].map((v) => ({ value: v, label: v }))}
-      />
+            {form.initiator_type === "Technician" && (
+              <FrappeSelect
+                label="Select Technician" value={form.requested_by}
+                onChange={(v) => set("requested_by")(v)}
+                options={toOpts(resources.map(r => ({ name: r.resource_name || r.name, label: r.resource_name || r.name })), "label")} required
+              />
+            )}
 
-      {/* ── Section: Client & Contract ── */}
-      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3 mt-2">Client & Contract</p>
-      <FrappeSelect
-        label="Client" value={form.client_code} onChange={handleClientChange} required
-        options={toOpts(clients as { name: string; label?: string }[], "client_name")}
-        placeholder="Search client…"
-      />
-      <FrappeSelect
-        label="Contract" value={form.contract_code} onChange={set("contract_code")}
-        options={toOpts(contracts as { name: string; label?: string }[], "contract_title")}
-        placeholder="Select active contract…" disabled={!form.client_code}
-      />
+            {form.initiator_type === "System" && (
+              <FrappeInput label="Requested By" value={form.requested_by} onChange={set("requested_by")} disabled />
+            )}
+          </div>
 
-      {/* ── Section: Location Hierarchy ── */}
-      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3 mt-2">Location</p>
-      <FrappeSelect
-        label="Property" value={form.property_code} onChange={handlePropertyChange} required
-        options={toOpts(properties as { name: string; label?: string }[], "property_name")}
-        placeholder="Select property…" disabled={!form.client_code}
-      />
-      <div className="grid grid-cols-2 gap-3">
-        <FrappeSelect
-          label="Zone" value={form.zone_code} onChange={handleZoneChange}
-          options={toOpts(zones as { name: string; label?: string }[], "zone_name")}
-          placeholder="Select zone…" disabled={!form.property_code}
-        />
-        <FrappeSelect
-          label="Sub Zone" value={form.sub_zone_code} onChange={handleSubZoneChange}
-          options={toOpts(subZones as { name: string; label?: string }[], "sub_zone_name")}
-          placeholder="Select sub zone…" disabled={!form.zone_code}
-        />
-      </div>
-      <FrappeSelect
-        label="Base Unit" value={form.base_unit_code} onChange={set("base_unit_code")}
-        options={toOpts(baseUnits as { name: string; label?: string }[], "base_unit_name")}
-        placeholder="Select base unit…" disabled={!form.sub_zone_code}
-      />
-      <FrappeSelect
-        label="Reporting Level" value={form.reporting_level} onChange={set("reporting_level")}
-        options={["Property", "Zone", "Sub Zone", "Base Unit", "Asset"].map((v) => ({ value: v, label: v }))}
-      />
-      {/* live location path */}
-      {form.property_code && (
-        <div className="mb-4 flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-3 py-2 rounded-lg">
-          <MapPin className="w-3 h-3 shrink-0" />
-          {[
-            properties.find((p) => p.name === form.property_code)?.property_name,
-            zones.find((z) => z.name === form.zone_code)?.zone_name,
-            subZones.find((s) => s.name === form.sub_zone_code)?.sub_zone_name,
-            baseUnits.find((b) => b.name === form.base_unit_code)?.base_unit_name,
-          ].filter(Boolean).join(" › ")}
+          <div className="grid grid-cols-2 gap-4">
+            <FrappeInput label="Raised Date" value={form.raised_date} onChange={set("raised_date")} type="date" required />
+            <FrappeInput label="Raised Time" value={form.raised_time} onChange={set("raised_time")} type="time" />
+          </div>
+
+          <div className="pt-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3 border-b border-border pb-2">Priority</p>
+            <div className="flex gap-2">
+              {["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"].map((p) => (
+                <button key={p} type="button" onClick={() => set("priority_actual")(p)}
+                  className={`flex-1 py-2 rounded-xl text-[11px] font-bold border-2 transition-all ${form.priority_actual === p ? "border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20" : "border-border text-foreground hover:border-primary/40"}`}>
+                  {priorityShort[p]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <FrappeSelect
+            label="Approval Criticality" value={form.approval_criticality} onChange={set("approval_criticality")}
+            options={["Normal", "High", "Critical", "Emergency"].map((v) => ({ value: v, label: v }))}
+          />
         </div>
       )}
 
-      {/* ── Section: Asset & Fault ── */}
-      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3 mt-2">Asset & Fault</p>
-      <FrappeSelect
-        label="Asset" value={form.asset_code} onChange={set("asset_code")}
-        options={(assets as { name: string; asset_code: string; asset_name: string }[]).map((a) => ({
-          value: a.name, label: `${a.asset_code} — ${a.asset_name}`,
-        }))}
-        placeholder="Search asset…" disabled={!form.property_code}
-      />
-      <FrappeInput label="Service Group" value={form.service_group} onChange={set("service_group")} placeholder="e.g. MEP, Civil, IT…" />
-      <FrappeInput label="Fault Category" value={form.fault_category} onChange={set("fault_category")} placeholder="e.g. HVAC, Plumbing…" />
-      <FrappeSelect
-        label="Fault Code" value={form.fault_code} onChange={set("fault_code")}
-        options={faultCodes.map((f) => ({ value: f.name, label: f.name }))}
-        placeholder="Search fault code…"
-      />
+      {/* Step 1 - Location & Asset */}
+      {step === 1 && (
+        <div className="fade-in space-y-6">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Client & Location</p>
+            <div className="grid grid-cols-2 gap-4">
+              <FrappeSelect
+                label="Client" value={form.client_code} onChange={handleClientChange} required
+                options={toOpts(clients as { name: string; label?: string }[], "client_name")}
+              />
+              <FrappeSelect
+                label="Contract" value={form.contract_code} onChange={set("contract_code")}
+                options={toOpts(contracts as { name: string; label?: string }[], "contract_title")}
+                disabled={!form.client_code}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <FrappeSelect
+                label="Branch" value={form.branch_code} onChange={handleBranchChange}
+                options={(branches as { name: string; branch_name: string; branch_code: string }[]).map(b => ({ value: b.name, label: `${b.branch_code} — ${b.branch_name}` }))}
+              />
+              <FrappeSelect
+                label="Property" value={form.property_code} onChange={handlePropertyChange} required
+                options={(properties as { name: string; property_name: string; property_code: string }[]).map(p => ({ value: p.name, label: `${p.property_code} — ${p.property_name}` }))}
+                disabled={!form.client_code && !form.branch_code}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <FrappeSelect
+                label="Zone" value={form.zone_code} onChange={handleZoneChange}
+                options={(zones as { name: string; zone_name: string; zone_code: string }[]).map(z => ({ value: z.name, label: `${z.zone_code} — ${z.zone_name}` }))}
+                disabled={!form.property_code}
+              />
+              <FrappeSelect
+                label="Sub Zone" value={form.sub_zone_code} onChange={handleSubZoneChange}
+                options={(subZones as { name: string; sub_zone_name: string; sub_zone_code: string }[]).map(s => ({ value: s.name, label: `${s.sub_zone_code} — ${s.sub_zone_name}` }))}
+                disabled={!form.zone_code}
+              />
+            </div>
+            <FrappeSelect
+              label="Base Unit" value={form.base_unit_code} onChange={set("base_unit_code")}
+              options={(baseUnits as { name: string; base_unit_name: string; base_unit_code: string }[]).map(bu => ({ value: bu.name, label: `${bu.base_unit_code} — ${bu.base_unit_name}` }))}
+              disabled={!form.sub_zone_code}
+            />
+          </div>
 
-      {/* ── Section: Reporter ── */}
-      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3 mt-2">Reporter</p>
-      <div className="grid grid-cols-2 gap-3">
-        <FrappeInput label="Reported By" value={form.reported_by} onChange={set("reported_by")} placeholder="Name…" />
-        <FrappeInput label="Contact Phone" value={form.contact_phone} onChange={set("contact_phone")} placeholder="+968-XXXX-XXXX" type="tel" />
-      </div>
-      <FrappeInput label="Requester Email" value={form.requester_email} onChange={set("requester_email")} placeholder="email@domain.com" type="email" />
-      <div className="mb-4">
-        <label className="block text-sm font-semibold text-foreground mb-1.5">Special Instructions</label>
-        <textarea
-          value={form.special_instructions}
-          onChange={(e) => set("special_instructions")(e.target.value)}
-          className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring min-h-[80px] resize-none"
-          placeholder="Any special access requirements, safety notes…"
-        />
-      </div>
-
-      {/* ── Section: Scheduling ── */}
-      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3 mt-2">Scheduling</p>
-      <div className="grid grid-cols-2 gap-3">
-        <FrappeInput label="Appointment Date" value={form.appointment_date} onChange={set("appointment_date")} type="date" />
-        <FrappeInput label="Preferred Date & Time" value={form.preferred_datetime} onChange={set("preferred_datetime")} type="datetime-local" />
-      </div>
-
-      {/* ── Notifications ── */}
-      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3 mt-2">Notifications</p>
-      <div className="mb-4 flex flex-col gap-3">
-        <label className="flex items-center gap-3 text-sm cursor-pointer">
-          <input type="checkbox" checked={form.notification_email} onChange={(e) => set("notification_email")(e.target.checked)}
-            className="rounded border-border w-4 h-4" />
-          <Mail className="w-4 h-4 text-muted-foreground" /> Send Email Notification
-        </label>
-        <label className="flex items-center gap-3 text-sm cursor-pointer">
-          <input type="checkbox" checked={form.notification_sms} onChange={(e) => set("notification_sms")(e.target.checked)}
-            className="rounded border-border w-4 h-4" />
-          <Smartphone className="w-4 h-4 text-muted-foreground" /> Send SMS Notification
-        </label>
-      </div>
-
-      {/* photo upload */}
-      <div className="mb-6">
-        <label className="block text-sm font-semibold text-foreground mb-1.5">Photo</label>
-        <div className="border-2 border-dashed border-border rounded-lg py-8 flex flex-col items-center gap-2 text-muted-foreground hover:border-primary/50 transition-colors cursor-pointer">
-          <Camera className="w-6 h-6" />
-          <span className="text-sm">Attach photo or drag here</span>
+          <div className="pt-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Technical Details</p>
+            <FrappeSelect
+              label="Asset" value={form.asset_code} onChange={set("asset_code")}
+              options={(assets as { name: string; asset_code: string; asset_name: string }[]).map((a) => ({
+                value: a.name, label: `${a.asset_code} — ${a.asset_name}`,
+              }))}
+              disabled={!form.property_code}
+            />
+            <div className="grid grid-cols-2 gap-4">
+              <FrappeInput label="Service Group" value={form.service_group} onChange={set("service_group")} placeholder="e.g. MEP, Civil" />
+              <FrappeInput label="Fault Category" value={form.fault_category} onChange={set("fault_category")} placeholder="e.g. HVAC, Plumbing" />
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* submit */}
-      <button
-        onClick={handleSubmit}
-        disabled={saving}
-        className="w-full py-3 bg-primary text-primary-foreground rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
-      >
-        {saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : <><Send className="w-4 h-4" /> Submit Request</>}
-      </button>
+      {/* Step 2 - Contact & Scheduling */}
+      {step === 2 && (
+        <div className="fade-in space-y-6">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Reporter Information</p>
+            <div className="grid grid-cols-2 gap-4">
+              <FrappeInput label="Reported By" value={form.reported_by} onChange={set("reported_by")} placeholder="Name" />
+              <FrappeInput label="Contact Phone" value={form.contact_phone} onChange={set("contact_phone")} type="tel" />
+            </div>
+            <FrappeInput label="Requester Email" value={form.requester_email} onChange={set("requester_email")} type="email" />
+            <div className="mt-4">
+              <label className="block text-xs font-semibold text-foreground mb-1.5">Special Instructions</label>
+              <textarea
+                value={form.special_instructions} onChange={(e) => set("special_instructions")(e.target.value)}
+                className="w-full px-4 py-3 border border-border rounded-xl text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/20 min-h-[80px] resize-none"
+              />
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Scheduling</p>
+            <div className="grid grid-cols-2 gap-4">
+              <FrappeInput label="Appointment Date" value={form.appointment_date} onChange={set("appointment_date")} type="date" />
+              <FrappeInput label="Preferred Date/Time" value={form.preferred_datetime} onChange={set("preferred_datetime")} type="datetime-local" />
+            </div>
+            <div className="flex flex-col gap-3 mt-4 p-4 bg-muted/30 rounded-2xl border border-border">
+              <label className="flex items-center gap-3 text-sm cursor-pointer font-medium">
+                <input type="checkbox" checked={form.notification_email} onChange={(e) => set("notification_email")(e.target.checked)} className="rounded border-border w-4 h-4" />
+                <Mail className="w-4 h-4 text-primary" /> Send Email Notification
+              </label>
+              <label className="flex items-center gap-3 text-sm cursor-pointer font-medium">
+                <input type="checkbox" checked={form.notification_sms} onChange={(e) => set("notification_sms")(e.target.checked)} className="rounded border-border w-4 h-4" />
+                <Smartphone className="w-4 h-4 text-emerald-500" /> Send SMS Notification
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3 - Photos */}
+      {step === 3 && (
+        <div className="fade-in space-y-6">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Support Evidence</p>
+          <div className="max-w-sm mx-auto space-y-3">
+            <label className="flex items-center justify-between px-1">
+              <span className="text-xs font-bold text-foreground">Reference Image</span>
+              {previewPhoto && <button onClick={() => { setPreviewPhoto(null); setForm(f => ({ ...f, _pending_photo: undefined })) }} className="text-[10px] font-bold text-destructive hover:underline uppercase tracking-tighter">Remove</button>}
+            </label>
+            <div className="relative group">
+              <input type="file" accept="image/*" onChange={handleImageUpload} disabled={uploading} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+              <div className={`border-2 rounded-2xl h-64 flex flex-col items-center justify-center gap-3 transition-all
+                  ${previewPhoto ? 'border-primary/20 bg-primary/5 shadow-inner' : 'border-dashed border-border text-muted-foreground bg-muted/20 group-hover:bg-muted/40'}
+                  ${uploading ? 'opacity-50' : ''}`}>
+                {uploading ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest">Uploading...</span>
+                  </div>
+                ) : previewPhoto ? (
+                  <img src={previewPhoto.startsWith('http') || previewPhoto.startsWith('blob:') ? previewPhoto : `http://facility.quantcloud.in${previewPhoto}`} className="w-full h-full object-cover rounded-xl" alt="Preview" />
+                ) : (
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="p-4 rounded-full bg-background shadow-sm"><Camera className="w-8 h-8 text-primary" /></div>
+                    <span className="text-sm font-bold text-foreground">Add or drag pictures</span>
+                    <span className="text-[11px] text-muted-foreground">Click to upload reference image</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Navigation */}
+      <div className="flex items-center gap-3 mt-8 pt-4 border-t border-border">
+        {step > 0 && (
+          <button type="button" onClick={() => setStep(step - 1)}
+            className="flex items-center gap-1.5 px-6 py-2.5 border border-border rounded-xl text-sm font-semibold hover:bg-muted transition-colors">
+            <ChevronLeft className="w-4 h-4" /> Back
+          </button>
+        )}
+        {step < STEPS.length - 1 ? (
+          <button type="button" onClick={() => setStep(step + 1)}
+            className="flex-1 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-bold hover:bg-primary/90 transition-all flex items-center justify-center gap-2">
+            Next Section <ChevronRight className="w-4 h-4" />
+          </button>
+        ) : (
+          <button type="button" onClick={handleSubmit} disabled={saving || uploading}
+            className="flex-1 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-bold hover:bg-primary/90 transition-all flex items-center justify-center gap-2 disabled:opacity-60">
+            {(saving || uploading) ? <><Loader2 className="w-4 h-4 animate-spin" /> {uploading ? 'Uploading...' : 'Saving...'} </> : editName ? "Update Request" : <><Send className="w-4 h-4" /> Submit Service Request</>}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -901,14 +1838,14 @@ function NewRequestForm({
    DETAIL VIEW
 ═══════════════════════════════════════════ */
 
-function DetailView({ srName, onClose }: { srName: string; onClose: () => void }) {
-  const { data: sr, loading, error } = useFrappeDoc<SRDetail>("Service Request", srName);
+function DetailView({ srName, onClose, onEdit, refreshKey = 0 }: { srName: string; onClose: () => void; onEdit: (name: string) => void; refreshKey?: number }) {
+  const { data: sr, loading, error } = useFrappeDoc<SRDetail>("Service Request", srName, refreshKey);
   const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({});
   const [converting, setConverting] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [createdWorkOrderNumber, setCreatedWorkOrderNumber] = useState("");
-  
+
   const togglePanel = (key: string) =>
     setCollapsedPanels((p) => ({ ...p, [key]: !p[key] }));
 
@@ -916,8 +1853,8 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
     const isOpen = collapsedPanels[id] === undefined ? defaultOpen : !collapsedPanels[id];
     return (
       <div className="mb-5 bg-card border border-border/60 rounded-2xl shadow-sm hover:shadow-md transition-shadow duration-300 overflow-hidden">
-        <button 
-          onClick={() => togglePanel(id)} 
+        <button
+          onClick={() => togglePanel(id)}
           className="w-full flex items-center justify-between px-5 py-4 bg-muted/20 hover:bg-muted/40 transition-colors"
         >
           <span className="text-sm font-bold text-foreground tracking-tight">{title}</span>
@@ -936,20 +1873,50 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
     );
   };
 
+  /**
+   * Maps a Service Request's wo_source value to a valid Work Orders wo_source.
+   *
+   * SR valid sources  : Portal | Phone | Email | Mobile App | On-Site | System
+   * WO valid sources  : Service Request | PM Schedule | Project | Helpdesk |
+   *                     Portal | Phone | Inspection | Manual
+   *
+   * Because this WO is always created FROM a Service Request, "Service Request"
+   * is the default fallback for any SR source that has no direct WO equivalent.
+   */
+  const mapSRSourceToWOSource = (srSource: string): string => {
+    // Clean and normalize the input
+    const cleanSource = (srSource || "").trim();
+    
+    // For all SR sources being converted to WO, default to "Service Request"
+    // since the WO is always created FROM a Service Request
+    const validWOSources = ["", "Service Request", "PM Schedule", "Project", "Helpdesk", "Portal", "Phone", "Inspection", "Manual"];
+    
+    // Only allow direct mapping if the source is already a valid WO source
+    if (validWOSources.includes(cleanSource)) {
+      console.log(`Direct mapping: SR source "${cleanSource}" is already a valid WO source`);
+      return cleanSource;
+    }
+    
+    // For all other SR sources (including Mobile App, Email, On-Site, System, etc.)
+    // map to "Service Request" since the WO originates from a Service Request
+    console.log(`Fallback mapping: SR source "${cleanSource}" → WO source "Service Request"`);
+    return "Service Request";
+  };
+
   const handleConvertToWorkOrder = async () => {
     if (!sr || converting) return;
-    
+
     setConverting(true);
     try {
       // Generate work order number
       const woNumber = generateID("WO");
-      
+
       // Create work order payload from service request data
       const woPayload = {
         wo_number: woNumber,
         wo_title: sr.sr_title,
         wo_type: "Reactive Maintenance",
-        wo_source: sr.wo_source,
+        wo_source: mapSRSourceToWOSource(sr.wo_source),
         status: "Open",
         actual_priority: sr.priority_actual,
         default_priority: sr.priority_default,
@@ -974,27 +1941,30 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
         work_done_notes: sr.work_description,
         response_sla_target: sr.response_sla_target,
         resolution_sla_target: sr.resolution_sla_target,
+        initiator_type: sr.initiator_type,
+        requested_by: (sr as any).requested_by,
       };
-      
+
       // Create the work order
       const workOrder = await frappeCreate("Work Orders", woPayload);
-      
+
       // Update the service request to mark as converted
       await frappeUpdate("Service Request", srName, {
         converted_to_wo: 1,
-        status: "Converted"
+        status: "Converted",
+        request_mode: mapSRSourceToWOSource(sr.wo_source) // Also update request_mode to valid value
       });
-      
+
       // Show success animation
       setCreatedWorkOrderNumber(woNumber);
       setShowSuccessModal(true);
-      
+
       // Close the detail view after animation
       setTimeout(() => {
         setShowSuccessModal(false);
         onClose();
       }, 3000);
-      
+
     } catch (error) {
       console.error("Failed to convert to work order:", error);
       alert(`Failed to convert to work order: ${(error as Error).message}`);
@@ -1013,7 +1983,7 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
       <div className="relative px-6 py-8 border-b border-border bg-gradient-to-br from-card to-muted/30 overflow-hidden">
         {/* Abstract Background Decoration */}
         <div className="absolute -top-24 -right-24 w-64 h-64 bg-primary/5 rounded-full blur-3xl pointer-events-none" />
-        
+
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-3 mb-2">
@@ -1025,7 +1995,7 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
             </div>
             <h2 className="text-2xl lg:text-3xl font-extrabold text-foreground tracking-tight leading-tight">{sr.sr_title}</h2>
           </div>
-          
+
           <div className="flex flex-wrap items-center gap-2">
             {/* Activity toggle */}
             <button
@@ -1035,12 +2005,14 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
               <Activity className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Activity</span>
             </button>
-            <button className="flex items-center gap-2 px-4 py-2 bg-background border border-border/60 hover:border-border text-sm font-semibold text-foreground hover:bg-muted/50 transition-all rounded-xl shadow-sm">
+            <button
+              onClick={() => onEdit(srName)}
+              className="flex items-center gap-2 px-4 py-2 bg-background border border-border/60 hover:border-border text-sm font-semibold text-foreground hover:bg-muted/50 transition-all rounded-xl shadow-sm">
               <Pencil className="w-4 h-4 text-muted-foreground" /> Edit
             </button>
-            <button className="flex items-center gap-2 px-4 py-2 bg-background border border-border/60 hover:border-border text-sm font-semibold text-foreground hover:bg-muted/50 transition-all rounded-xl shadow-sm">
+            {/* <button className="flex items-center gap-2 px-4 py-2 bg-background border border-border/60 hover:border-border text-sm font-semibold text-foreground hover:bg-muted/50 transition-all rounded-xl shadow-sm">
               <MoreVertical className="w-4 h-4 text-muted-foreground" /> Actions
-            </button>
+            </button> */}
           </div>
         </div>
       </div>
@@ -1054,7 +2026,7 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
           </div>
           <div className="p-4 rounded-xl border border-border/50 bg-muted/20 hover:bg-muted/40 transition-colors">
             <div className="text-[11px] uppercase tracking-wider text-muted-foreground/80 font-bold mb-1">Response SLA</div>
-            <div className={`text-sm font-bold ${slaBadge[sr.response_sla_status || ""] || "text-muted-foreground"}`}>{sr.response_sla_status || "—"}</div>
+            <div className={`text-sm font-bold ${slaBadge[sr.response_sla_status || ""] || "text-muted-foreground"}`}>{normalizeSlaStatus(sr.response_sla_status) || "—"}</div>
           </div>
           <div className="p-4 rounded-xl border border-border/50 bg-muted/20 hover:bg-muted/40 transition-colors">
             <div className="text-[11px] uppercase tracking-wider text-muted-foreground/80 font-bold mb-1">Created</div>
@@ -1071,135 +2043,152 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
         {/* ── MAIN CONTENT ── */}
         <div className="flex-1 overflow-y-auto">
           <div className="px-6 py-8 max-w-6xl mx-auto">
-        <CollapsibleSection title="Request Details" id="details">
-          <Field label="Approval Criticality" value={sr.approval_criticality} />
-          <Field label="Request Mode" value={sr.wo_source} />
-          <Field label="Converted to WO" value={sr.converted_to_wo ? "Yes" : "No"} />
-        </CollapsibleSection>
+            <CollapsibleSection title="Request Details" id="details">
+              <Field label="Approval Criticality" value={sr.approval_criticality} />
+              <Field label="Request Mode" value={sr.wo_source} />
+              <Field label="Converted to WO" value={sr.converted_to_wo ? "Yes" : "No"} />
+            </CollapsibleSection>
 
-        <CollapsibleSection title="Client & Facility" id="client_location">
-          <Field label="Client" value={sr.client_name || sr.client_code} link />
-          <Field label="Contract" value={sr.contract_code} link />
-          <Field label="Contract Group" value={sr.contract_group} />
-          <Field label="Property" value={sr.property_name || sr.property_code} link />
-          <Field label="Zone" value={sr.zone_code} />
-          <Field label="Sub Zone" value={sr.sub_zone_code} />
-          <Field label="Base Unit" value={sr.base_unit_code} />
-          <Field label="Reporting Level" value={sr.reporting_level} />
-          <Field label="Business Type" value={sr.business_type} />
-          {sr.location_full_path && (
-            <div className="col-span-1 sm:col-span-2 lg:col-span-3 px-4 py-3 bg-muted/20 rounded-xl border border-border/50 mt-2 flex items-start gap-2.5">
-              <MapPin className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-              <div>
-                <p className="text-[11px] uppercase tracking-wider text-muted-foreground/80 font-bold mb-0.5">Location Path</p>
-                <p className="text-sm font-medium text-foreground">{sr.location_full_path}</p>
-              </div>
-            </div>
-          )}
-        </CollapsibleSection>
-
-        <CollapsibleSection title="Asset & Fault Mapping" id="asset">
-          <Field label="Asset" value={sr.asset_code} link />
-          <Field label="Service Group" value={sr.service_group} />
-          <Field label="Fault Category" value={sr.fault_category} />
-          <Field label="Fault Code" value={sr.fault_code} />
-          <Field label="Priority (Default)" value={sr.priority_default} />
-          {sr.priority_change_reason && (
-            <Field label="Priority Change Reason" value={sr.priority_change_reason} />
-          )}
-        </CollapsibleSection>
-
-        <CollapsibleSection title="Reporter & Contact Information" id="reporter">
-          <Field label="Reported By" value={sr.reported_by} />
-          <Field label="Contact Phone" value={sr.contact_phone} />
-          <Field label="Email" value={sr.requester_email} link />
-          {sr.special_instructions && (
-            <div className="col-span-1 sm:col-span-2 lg:col-span-3 mt-3 px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-              <p className="text-[11px] uppercase tracking-wider text-amber-600/80 font-bold mb-1 flex items-center gap-1.5">
-                <AlertCircle className="w-3.5 h-3.5" /> Special Instructions
-              </p>
-              <p className="text-sm text-foreground leading-relaxed font-medium">{sr.special_instructions}</p>
-            </div>
-          )}
-        </CollapsibleSection>
-
-        {sr.work_description && (
-          <CollapsibleSection title="Work Description" id="desc">
-            <div className="col-span-1 sm:col-span-2 lg:col-span-3 px-4 py-2">
-              <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{sr.work_description}</p>
-            </div>
-          </CollapsibleSection>
-        )}
-
-        <CollapsibleSection title="SLA & Scheduling" id="sla" defaultOpen={false}>
-          <Field label="Appointment Date" value={sr.appointment_date} />
-          <Field label="Preferred Date & Time" value={sr.preferred_datetime} />
-          <Field label="Response SLA Target" value={sr.response_sla_target} />
-          <Field label="Response SLA Actual" value={sr.response_sla_actual} />
-          <Field label="Resolution SLA Target" value={sr.resolution_sla_target} />
-          <Field label="Resolution SLA Actual" value={sr.resolution_sla_actual} />
-        </CollapsibleSection>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-6">
-          {/* Notifications Panel */}
-          <div className="bg-card border border-border/60 rounded-2xl shadow-sm p-5">
-            <h3 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
-              <Zap className="w-4 h-4 text-primary" /> Notification Settings
-            </h3>
-            <div className="flex flex-col gap-4">
-              <div className="flex items-center justify-between p-3 rounded-xl bg-muted/20 border border-border/50">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center">
-                    <Mail className="w-4 h-4 text-blue-600" />
+            <CollapsibleSection title="Client & Facility" id="client_location">
+              <Field label="Client" value={sr.client_name || sr.client_code} link />
+              <Field label="Contract" value={sr.contract_code} link />
+              <Field label="Contract Group" value={sr.contract_group} />
+              <Field label="Branch" value={sr.branch_name || sr.branch_code} />
+              <Field label="Property" value={sr.property_name || sr.property_code} link />
+              <Field label="Zone" value={sr.zone_name || sr.zone_code} />
+              <Field label="Sub Zone" value={sr.sub_zone_name || sr.sub_zone_code} />
+              <Field label="Base Unit" value={sr.base_unit_name || sr.base_unit_code} />
+              <Field label="Reporting Level" value={sr.reporting_level} />
+              <Field label="Business Type" value={sr.business_type} />
+              {sr.location_full_path && (
+                <div className="col-span-1 sm:col-span-2 lg:col-span-3 px-4 py-3 bg-muted/20 rounded-xl border border-border/50 mt-2 flex items-start gap-2.5">
+                  <MapPin className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground/80 font-bold mb-0.5">Location Path</p>
+                    <p className="text-sm font-medium text-foreground">{sr.location_full_path}</p>
                   </div>
-                  <span className="text-sm font-semibold text-foreground">Email Notifications</span>
                 </div>
-                <Switch checked={!!sr.notification_email} />
-              </div>
-              <div className="flex items-center justify-between p-3 rounded-xl bg-muted/20 border border-border/50">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center">
-                    <Smartphone className="w-4 h-4 text-emerald-600" />
+              )}
+            </CollapsibleSection>
+
+            <CollapsibleSection title="Asset & Fault Mapping" id="asset">
+              <Field label="Asset" value={sr.asset_code} link />
+              <Field label="Service Group" value={sr.service_group} />
+              <Field label="Fault Category" value={sr.fault_category} />
+              <Field label="Fault Code" value={sr.fault_code} />
+              <Field label="Priority (Default)" value={sr.priority_default} />
+              {sr.priority_change_reason && (
+                <Field label="Priority Change Reason" value={sr.priority_change_reason} />
+              )}
+            </CollapsibleSection>
+
+            <CollapsibleSection title="Reporter & Contact Information" id="reporter">
+              <Field label="Requested By" value={(sr as any).requested_by} />
+              <Field label="Reported By" value={sr.reported_by} />
+              <Field label="Contact Phone" value={sr.contact_phone} />
+              <Field label="Email" value={sr.requester_email} link />
+              {sr.special_instructions && (
+                <div className="col-span-1 sm:col-span-2 lg:col-span-3 mt-3 px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
+                  <p className="text-[11px] uppercase tracking-wider text-amber-600/80 font-bold mb-1 flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5" /> Special Instructions
+                  </p>
+                  <p className="text-sm text-foreground leading-relaxed font-medium">{sr.special_instructions}</p>
+                </div>
+              )}
+            </CollapsibleSection>
+
+            {sr.work_description && (
+              <CollapsibleSection title="Work Description" id="desc">
+                <div className="col-span-1 sm:col-span-2 lg:col-span-3 px-4 py-2">
+                  <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{sr.work_description}</p>
+                </div>
+              </CollapsibleSection>
+            )}
+
+            <CollapsibleSection title="Photo Evidence" id="photos">
+              <div className="col-span-1 sm:col-span-2 lg:col-span-3 px-4 py-2 flex justify-center">
+                <div className="border border-border rounded-xl overflow-hidden max-w-sm w-full">
+                  {sr.photo
+                    ? <img src={sr.photo.startsWith('http') || sr.photo.startsWith('blob:') ? sr.photo : `http://facility.quantcloud.in${sr.photo}`} alt="Service Request Photo" className="w-full h-48 object-cover" />
+                    : <div className="h-48 bg-muted/40 flex flex-col items-center justify-center gap-1 text-muted-foreground">
+                      <Camera className="w-6 h-6" /><p className="text-xs">No photo uploaded</p>
+                    </div>}
+                  <div className="px-3 py-2 bg-muted/30 border-t border-border text-center">
+                    <p className="text-xs font-semibold text-foreground">Reference Image</p>
                   </div>
-                  <span className="text-sm font-semibold text-foreground">SMS Notifications</span>
                 </div>
-                <Switch checked={!!sr.notification_sms} />
+              </div>
+            </CollapsibleSection>
+
+            <CollapsibleSection title="SLA & Scheduling" id="sla" defaultOpen={false}>
+              <Field label="Appointment Date" value={sr.appointment_date} />
+              <Field label="Preferred Date & Time" value={sr.preferred_datetime} />
+              <Field label="Response SLA Target" value={sr.response_sla_target} />
+              <Field label="Response SLA Actual" value={sr.response_sla_actual} />
+              <Field label="Resolution SLA Target" value={sr.resolution_sla_target} />
+              <Field label="Resolution SLA Actual" value={sr.resolution_sla_actual} />
+            </CollapsibleSection>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-6">
+              {/* Notifications Panel */}
+              <div className="bg-card border border-border/60 rounded-2xl shadow-sm p-5">
+                <h3 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-primary" /> Notification Settings
+                </h3>
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-muted/20 border border-border/50">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center">
+                        <Mail className="w-4 h-4 text-blue-600" />
+                      </div>
+                      <span className="text-sm font-semibold text-foreground">Email Notifications</span>
+                    </div>
+                    <Switch checked={!!sr.notification_email} />
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-muted/20 border border-border/50">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                        <Smartphone className="w-4 h-4 text-emerald-600" />
+                      </div>
+                      <span className="text-sm font-semibold text-foreground">SMS Notifications</span>
+                    </div>
+                    <Switch checked={!!sr.notification_sms} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Internal Notes Panel */}
+              <div className="bg-card border border-border/60 rounded-2xl shadow-sm p-5 flex flex-col">
+                <h3 className="text-sm font-bold text-foreground mb-3">Internal Notes</h3>
+                <textarea
+                  className="w-full flex-1 px-4 py-3 border border-border/50 rounded-xl text-sm bg-muted/10 hover:bg-muted/20 focus:bg-background focus:outline-none focus:ring-2 focus:ring-primary/50 transition-colors resize-none"
+                  placeholder="Add internal notes for your team here..."
+                />
               </div>
             </div>
-          </div>
 
-          {/* Internal Notes Panel */}
-          <div className="bg-card border border-border/60 rounded-2xl shadow-sm p-5 flex flex-col">
-            <h3 className="text-sm font-bold text-foreground mb-3">Internal Notes</h3>
-            <textarea
-              className="w-full flex-1 px-4 py-3 border border-border/50 rounded-xl text-sm bg-muted/10 hover:bg-muted/20 focus:bg-background focus:outline-none focus:ring-2 focus:ring-primary/50 transition-colors resize-none"
-              placeholder="Add internal notes for your team here..."
-            />
-          </div>
-        </div>
+            {(sr.customer_rating || sr.remarks) && (
+              <CollapsibleSection title="Closure & Feedback" id="closure">
+                <Field label="Customer Rating" value={sr.customer_rating} />
+                <Field label="Remarks" value={sr.remarks} />
+              </CollapsibleSection>
+            )}
 
-        {(sr.customer_rating || sr.remarks) && (
-          <CollapsibleSection title="Closure & Feedback" id="closure">
-            <Field label="Customer Rating" value={sr.customer_rating} />
-            <Field label="Remarks" value={sr.remarks} />
-          </CollapsibleSection>
-        )}
-
-          {!sr.converted_to_wo && (
-            <div className="mt-8 mb-4">
-              <button 
-                onClick={handleConvertToWorkOrder}
-                disabled={converting}
-                className="w-full relative group overflow-hidden py-4 rounded-xl text-sm font-bold transition-all shadow-md hover:shadow-lg disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-primary to-primary/80" />
-                <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-primary/80 to-primary opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-                <span className="relative z-10 flex items-center justify-center gap-2 text-primary-foreground">
-                  {converting ? <><Loader2 className="w-4 h-4 animate-spin" /> Converting...</> : <>Convert to Work Order <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform duration-300" /></>}
-                </span>
-              </button>
-            </div>
-          )}
+            {!sr.converted_to_wo && (
+              <div className="mt-8 mb-4">
+                <button
+                  onClick={handleConvertToWorkOrder}
+                  disabled={converting}
+                  className="w-full relative group overflow-hidden py-4 rounded-xl text-sm font-bold transition-all shadow-md hover:shadow-lg disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-primary to-primary/80" />
+                  <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-primary/80 to-primary opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                  <span className="relative z-10 flex items-center justify-center gap-2 text-primary-foreground">
+                    {converting ? <><Loader2 className="w-4 h-4 animate-spin" /> Converting...</> : <>Convert to Work Order <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform duration-300" /></>}
+                  </span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1231,7 +2220,7 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
                 ))}
               </div>
             </div>
-            
+
             {/* Success card */}
             <div className="relative bg-white rounded-3xl p-12 shadow-2xl animate-scaleIn mx-4 max-w-sm w-full">
               {/* Animated checkmark */}
@@ -1250,7 +2239,7 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
                   </svg>
                 </div>
               </div>
-              
+
               {/* Success text */}
               <div className="text-center">
                 <h2 className="text-2xl font-bold text-gray-900 mb-2 animate-slideUp">
@@ -1264,7 +2253,7 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
                   <span className="font-mono">{createdWorkOrderNumber}</span>
                 </div>
               </div>
-              
+
               {/* Loading dots */}
               <div className="flex justify-center gap-2 mt-6 animate-slideUp" style={{ animationDelay: '0.3s' }}>
                 <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
@@ -1279,17 +2268,39 @@ function DetailView({ srName, onClose }: { srName: string; onClose: () => void }
   );
 }
 
-/* ═══════════════════════════════════════════
-   MAIN COMPONENT
+/* ── MAIN COMPONENT ──
 ═══════════════════════════════════════════ */
 
 export default function Requests() {
+  const [searchParams] = useSearchParams();
   const [selectedName, setSelectedName] = useState<string | null>(null);
-  const [tab, setTab] = useState<"open" | "closed">("open");
-  const [showNewForm, setShowNewForm] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [tab, setTab] = useState<"all" | "open" | "closed">("all");
   const [showPortals, setShowPortals] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [editName, setEditName] = useState<string | null>(null);
+
+  /* ── dynamic filter state ── */
+  const [filterAsset, setFilterAsset] = useState("");
+  const [filterBranch, setFilterBranch] = useState("");
+  const [filterLocation, setFilterLocation] = useState("");
+  const [filterPriority, setFilterPriority] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterSource, setFilterSource] = useState("");
+  const [activeFilterKey, setActiveFilterKey] = useState<string | null>(null);
+  const filterRef = useRef<HTMLDivElement>(null);
+
+  /* close dropdown on outside click */
+  useEffect(() => {
+    if (!activeFilterKey) return;
+    const h = (e: MouseEvent) => {
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setActiveFilterKey(null);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [activeFilterKey]);
 
   const toggleSection = (key: string) =>
     setCollapsedSections((p) => ({ ...p, [key]: !p[key] }));
@@ -1297,51 +2308,100 @@ export default function Requests() {
   /* ── fetch SR list ── */
   const openStatuses = ["Open", "In Progress", "Pending Approval"];
   const closedStatuses = ["Converted", "Closed", "Cancelled"];
-  const statusFilter = tab === "open" ? openStatuses : closedStatuses;
+
+  const statusFilter =
+    tab === "open"
+      ? openStatuses
+      : tab === "closed"
+        ? closedStatuses
+        : [...openStatuses, ...closedStatuses]; // ALL
+
 
   const { data: srList, loading: listLoading, error: listError, refetch } = useFrappeList<SRListItem>(
     "Service Request",
-    ["name", "sr_number", "sr_title", "status", "priority_actual",
-      "property_code", "property_name", "client_code", "client_name",
+    ["name", "sr_number", "sr_title", "status", "priority_actual", "photo", "location_full_path",
+      "branch_code", "branch_name", "property_code", "property_name", "client_code", "client_name",
       "raised_date", "raised_time", "wo_source", "zone_code",
-      "response_sla_status", "resolution_sla_status", "converted_to_wo"],
+      "response_sla_status", "resolution_sla_status", "converted_to_wo", "requested_by"],
     [["status", "in", statusFilter.join(",")]],
     [tab]
   );
 
-  /* filter by search */
+  /* ── derive unique filter options from live data ── */
+  const allBranches = useMemo(() => Array.from(new Set(srList.map((r) => r.branch_name || r.branch_code).filter(Boolean))) as string[], [srList]);
+  const allLocations = useMemo(() => Array.from(new Set(srList.map((r) => r.property_name || r.property_code).filter(Boolean))) as string[], [srList]);
+  const allPriorities = useMemo(() => Array.from(new Set(srList.map((r) => r.priority_actual).filter(Boolean))) as string[], [srList]);
+  const allStatuses = useMemo(() => Array.from(new Set(srList.map((r) => r.status).filter(Boolean))) as string[], [srList]);
+  const allSources = useMemo(() => Array.from(new Set(srList.map((r) => r.wo_source).filter(Boolean))) as string[], [srList]);
+
+  const activeFiltersCount = [filterBranch, filterAsset, filterLocation, filterPriority, filterStatus, filterSource].filter(Boolean).length;
+
+  const clearAllFilters = () => {
+    setFilterBranch(""); setFilterAsset(""); setFilterLocation(""); setFilterPriority("");
+    setFilterStatus(""); setFilterSource(""); setActiveFilterKey(null);
+  };
+
+  /* filter by search + active chip filters */
   const filtered = srList.filter((r) => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      r.sr_title?.toLowerCase().includes(q) ||
-      r.sr_number?.toLowerCase().includes(q) ||
-      r.client_name?.toLowerCase().includes(q) ||
-      r.property_name?.toLowerCase().includes(q)
-    );
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const matchSearch =
+        r.sr_title?.toLowerCase().includes(q) ||
+        r.sr_number?.toLowerCase().includes(q) ||
+        r.client_name?.toLowerCase().includes(q) ||
+        r.property_name?.toLowerCase().includes(q);
+      if (!matchSearch) return false;
+    }
+    if (filterBranch && (r.branch_name || r.branch_code) !== filterBranch) return false;
+    if (filterLocation && (r.property_name || r.property_code) !== filterLocation) return false;
+    if (filterPriority && r.priority_actual !== filterPriority) return false;
+    if (filterStatus && r.status !== filterStatus) return false;
+    if (filterSource && r.wo_source !== filterSource) return false;
+    return true;
   });
+
+  /* handle URL parameter for specific request selection */
+  useEffect(() => {
+    const requestParam = searchParams.get('request');
+    if (requestParam) {
+      const decodedRequest = decodeURIComponent(requestParam);
+      const foundRequest = filtered.find(r => r.name === decodedRequest);
+      if (foundRequest) {
+        setSelectedName(foundRequest.name);
+        setShowForm(false);
+      }
+    }
+  }, [searchParams, filtered]);
 
   /* select first on load */
   useEffect(() => {
-    if (filtered.length > 0 && !selectedName && !showNewForm) {
+    if (filtered.length > 0 && !selectedName && !showForm) {
       setSelectedName(filtered[0].name);
     }
-  }, [filtered, selectedName, showNewForm]);
+  }, [filtered, selectedName, showForm]);
 
   /* ── request card ── */
   const RequestCard = ({ r }: { r: SRListItem }) => (
     <button
-      onClick={() => { setSelectedName(r.name); setShowNewForm(false); }}
-      className={`list-item-hover w-full text-left px-4 py-3 border-b border-border flex gap-3 ${selectedName === r.name && !showNewForm ? "selected" : ""}`}
+      onClick={() => { setSelectedName(r.name); setShowForm(false); }}
+      className={`list-item-hover w-full text-left px-4 py-3 border-b border-border flex gap-3 ${selectedName === r.name && !showForm ? "selected" : ""}`}
     >
-      <div className="w-11 h-11 rounded-lg bg-muted flex items-center justify-center shrink-0">
-        <Camera className="w-4 h-4 text-muted-foreground" />
+      <div className="w-12 h-12 rounded-xl bg-muted/60 flex items-center justify-center shrink-0 border border-border/40 overflow-hidden transition-all group-hover:bg-muted/80">
+        {r.photo ? (
+          <img
+            src={r.photo.startsWith('http') || r.photo.startsWith('blob:') ? r.photo : `http://facility.quantcloud.in${r.photo}`}
+            className="w-full h-full object-cover"
+            alt="SR"
+          />
+        ) : (
+          <Camera className="w-5 h-5 text-muted-foreground/60" />
+        )}
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-foreground truncate">{r.sr_title}</p>
-        <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-          <MapPin className="w-3 h-3" />
-          {[r.property_name || r.property_code, r.zone_code].filter(Boolean).join(" · ")}
+        <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5 max-w-full overflow-hidden">
+          <MapPin className="w-3 h-3 shrink-0" />
+          <span className="truncate">{r.location_full_path || [r.property_name || r.property_code, r.zone_name || r.zone_code].filter(Boolean).join(" · ")}</span>
         </p>
         <div className="flex items-center gap-2 mt-1">
           <span className={`flex items-center gap-1 text-xs font-medium ${statusColor[r.status] || "text-muted-foreground"}`}>
@@ -1387,7 +2447,7 @@ export default function Requests() {
             />
           </div>
           <button
-            onClick={() => { setShowNewForm(true); setSelectedName(null); }}
+            onClick={() => { setEditName(null); setShowForm(true); setSelectedName(null); }}
             className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors"
           >
             <Plus className="w-4 h-4" /> New Request
@@ -1395,14 +2455,275 @@ export default function Requests() {
         </div>
       </div>
 
-      {/* filter row */}
-      <div className="flex items-center gap-2 px-5 py-2.5 border-b border-border bg-card">
-        <span className="filter-chip"><Filter className="w-3.5 h-3.5" /> Filter</span>
-        <span className="filter-chip">🏗 Asset</span>
-        <span className="filter-chip"><MapPin className="w-3.5 h-3.5" /> Location</span>
-        <span className="filter-chip"><Zap className="w-3.5 h-3.5" /> Priority</span>
-        <span className="filter-chip"><CheckCircle2 className="w-3.5 h-3.5" /> Status</span>
-        <span className="filter-chip"><Plus className="w-3 h-3" /> Add Filter</span>
+      {/* ══ DYNAMIC FILTER BAR ══ */}
+      <div className="flex items-center gap-2 px-5 py-2 border-b border-border bg-card flex-wrap relative z-40" ref={filterRef}>
+        {/* Filter label */}
+        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold select-none
+          ${activeFiltersCount > 0 ? "border-primary bg-primary/8 text-primary" : "border-border text-muted-foreground bg-muted/30"}`}>
+          <Filter className="w-3.5 h-3.5" /> Filters
+          {activeFiltersCount > 0 && (
+            <span className="ml-1 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[9px] font-bold flex items-center justify-center">
+              {activeFiltersCount}
+            </span>
+          )}
+        </div>
+
+        {/* ─── Branch filter ─── */}
+        {(() => {
+          const key = "branch";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterBranch;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <Building2 className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span className="max-w-[120px] truncate">{filterBranch}</span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterBranch(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5 transition-colors">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Branch</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[200px] max-h-52 overflow-y-auto">
+                  <button onClick={() => { setFilterBranch(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Branches
+                  </button>
+                  {allBranches.map((l) => (
+                    <button key={l} onClick={() => { setFilterBranch(l); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between ${filterBranch === l ? "text-primary font-semibold" : "text-foreground"}`}>
+                      {l}
+                      {filterBranch === l && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allBranches.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ─── Location filter ─── */}
+        {(() => {
+          const key = "location";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterLocation;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span className="max-w-[120px] truncate">{filterLocation}</span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterLocation(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5 transition-colors">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Location</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[200px] max-h-52 overflow-y-auto">
+                  <button onClick={() => { setFilterLocation(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Locations
+                  </button>
+                  {allLocations.map((l) => (
+                    <button key={l} onClick={() => { setFilterLocation(l); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between ${filterLocation === l ? "text-primary font-semibold" : "text-foreground"}`}>
+                      {l}
+                      {filterLocation === l && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allLocations.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ─── Priority filter ─── */}
+        {(() => {
+          const key = "priority";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterPriority;
+          const priorityColors: Record<string, string> = {
+            "P1 - Critical": "text-red-600", "P2 - High": "text-orange-600",
+            "P3 - Medium": "text-amber-600", "P4 - Low": "text-emerald-600",
+          };
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <Zap className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span>{priorityShort[filterPriority] || filterPriority}</span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterPriority(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Priority</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[160px]">
+                  <button onClick={() => { setFilterPriority(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Priorities
+                  </button>
+                  {allPriorities.map((p) => (
+                    <button key={p} onClick={() => { setFilterPriority(p); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-semibold transition-colors hover:bg-muted flex items-center justify-between ${filterPriority === p ? "bg-muted/50" : ""} ${priorityColors[p] || "text-foreground"}`}>
+                      {priorityShort[p] || p}
+                      {filterPriority === p && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allPriorities.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ─── Status filter ─── */}
+        {(() => {
+          const key = "status";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterStatus;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span className="flex items-center gap-1">
+                      <span className={`w-1.5 h-1.5 rounded-full ${statusDot[filterStatus] || "bg-gray-400"}`} />
+                      {filterStatus}
+                    </span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterStatus(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Status</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[180px]">
+                  <button onClick={() => { setFilterStatus(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Statuses
+                  </button>
+                  {allStatuses.map((s) => (
+                    <button key={s} onClick={() => { setFilterStatus(s); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between
+                        ${statusColor[s] || "text-foreground"} ${filterStatus === s ? "bg-muted/50" : ""}`}>
+                      <span className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${statusDot[s] || "bg-gray-400"}`} />
+                        {s}
+                      </span>
+                      {filterStatus === s && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allStatuses.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ─── Source filter ─── */}
+        {(() => {
+          const key = "source";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterSource;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <Send className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span>{filterSource}</span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterSource(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Source</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[160px]">
+                  <button onClick={() => { setFilterSource(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Sources
+                  </button>
+                  {allSources.map((s) => (
+                    <button key={s} onClick={() => { setFilterSource(s); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between text-foreground ${filterSource === s ? "bg-muted/50 text-primary font-semibold" : ""}`}>
+                      {s}
+                      {filterSource === s && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allSources.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* clear all */}
+        {activeFiltersCount > 0 && (
+          <button
+            onClick={clearAllFilters}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-semibold text-destructive hover:bg-destructive/10 border border-destructive/20 transition-all"
+          >
+            <X className="w-3 h-3" /> Clear all
+          </button>
+        )}
+
+        {/* results count */}
+        {activeFiltersCount > 0 && (
+          <span className="ml-auto text-xs text-muted-foreground font-medium">
+            {filtered.length}/{srList.length} requests
+          </span>
+        )}
       </div>
 
       {/* ══ BODY ══ */}
@@ -1411,13 +2732,20 @@ export default function Requests() {
         <div className="w-[380px] min-w-[380px] border-r border-border flex flex-col bg-card overflow-hidden">
           {/* tabs */}
           <div className="flex border-b border-border">
-            {(["open", "closed"] as const).map((t) => (
-              <button key={t} onClick={() => setTab(t)}
-                className={`flex-1 py-2.5 text-sm font-semibold transition-colors ${tab === t ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
-                {t === "open" ? "Open" : "Closed"}
+            {(["all", "open", "closed"] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`flex-1 py-2.5 text-sm font-semibold transition-colors ${tab === t
+                  ? "text-primary border-b-2 border-primary"
+                  : "text-muted-foreground hover:text-foreground"
+                  }`}
+              >
+                {t === "all" ? "All" : t === "open" ? "Open" : "Closed"}
               </button>
             ))}
           </div>
+
 
           {/* sort hint */}
           <div className="px-4 py-2 text-xs text-muted-foreground flex items-center gap-1">
@@ -1468,20 +2796,21 @@ export default function Requests() {
 
           <div className="border-t border-border py-3 text-center">
             <span className="text-sm text-muted-foreground hover:text-primary cursor-pointer underline">
-              All {tab === "open" ? "Open" : "Closed"} Requests ({filtered.length})
+              All {tab === "all" ? "Requests" : tab === "open" ? "Open" : "Closed"} Requests ({filtered.length})
             </span>
+
           </div>
         </div>
 
         {/* ── RIGHT PANEL ── */}
         <div className="flex-1 overflow-y-auto bg-background">
-          {showNewForm ? (
-            <NewRequestForm
-              onClose={() => setShowNewForm(false)}
-              onCreated={(name) => { setShowNewForm(false); setSelectedName(name); refetch(); }}
+          {selectedName ? (
+            <DetailView
+              srName={selectedName}
+              onClose={() => setSelectedName(null)}
+              onEdit={(name) => { setEditName(name); setShowForm(true); }}
+              refreshKey={refreshKey}
             />
-          ) : selectedName ? (
-            <DetailView srName={selectedName} onClose={() => setSelectedName(null)} />
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
               <MessageSquare className="w-10 h-10" />
@@ -1491,49 +2820,29 @@ export default function Requests() {
         </div>
       </div>
 
-      {/* ═══ REQUEST PORTALS DRAWER ═══ */}
+      {/* Request Form Drawer */}
+      <Sheet open={showForm} onOpenChange={setShowForm}>
+        <SheetContent side="right" className="sm:max-w-[700px] p-0 overflow-y-auto">
+          <SheetHeader className="px-6 py-4 border-b sticky top-0 bg-background z-20">
+            <SheetTitle>{editName ? "Edit Service Request" : "New Service Request"}</SheetTitle>
+            <SheetDescription>Form to create or edit a service request</SheetDescription>
+          </SheetHeader>
+          <RequestForm
+            editName={editName || undefined}
+            onClose={() => setShowForm(false)}
+            onSaved={(name) => {
+              setShowForm(false);
+              refetch();
+              setRefreshKey(k => k + 1);
+              setSelectedName(name);
+            }}
+          />
+        </SheetContent>
+      </Sheet>
+
+      {/* ═══ REQUEST PORTALS DRAWER (dynamic) ═══ */}
       {showPortals && (
-        <>
-          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => setShowPortals(false)} />
-          <div className="fixed right-0 top-0 h-full w-[420px] bg-card border-l border-border z-50 shadow-xl flex flex-col fade-in">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-              <h2 className="text-lg font-bold text-foreground">Request Portals</h2>
-              <button onClick={() => setShowPortals(false)} className="p-1 hover:bg-muted rounded">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto px-5 py-4">
-              <p className="text-sm text-muted-foreground leading-relaxed mb-5">
-                Request Portals are customizable web-based forms where anyone can submit a Request for your facility — no app or login required.
-              </p>
-              <div className="flex flex-col gap-3 mb-6 text-sm text-foreground">
-                <span className="flex items-center gap-2 italic"><ChevronRight className="w-4 h-4 text-primary" /> Shared via link or QR code</span>
-                <span className="flex items-center gap-2 italic"><Link2 className="w-4 h-4 text-primary" /> Linked to a preset Asset or Location</span>
-                <span className="flex items-center gap-2 italic"><Mail className="w-4 h-4 text-primary" /> Receive email notifications only</span>
-              </div>
-              <button className="w-full py-3 bg-primary text-primary-foreground rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 mb-6">
-                <Plus className="w-4 h-4" /> Create Request Portal
-              </button>
-              <div className="border border-border rounded-xl p-4 flex gap-3">
-                <div className="w-12 h-12 bg-muted rounded-lg flex items-center justify-center shrink-0">
-                  <QrCode className="w-5 h-5 text-muted-foreground" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-foreground">Lobby Request Portal</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Sample Portal</p>
-                  <div className="flex items-center gap-2 mt-2">
-                    <button className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-border text-xs font-medium text-foreground hover:bg-muted transition-colors">
-                      <Copy className="w-3 h-3" /> Copy Link
-                    </button>
-                    <button className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-border text-xs font-medium text-foreground hover:bg-muted transition-colors">
-                      <Pencil className="w-3 h-3" /> Edit
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </>
+        <RequestPortalsDrawer onClose={() => setShowPortals(false)} />
       )}
     </div>
   );

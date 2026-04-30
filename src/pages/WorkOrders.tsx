@@ -1,22 +1,24 @@
-/**
- * WorkOrders.tsx  ·  Facility-UI
- * 100% dynamic from Frappe REST API — schema: work_orders.json
- * NEW: Print modal (section-select → styled print window) + Activity sidebar
- */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+
+import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Search, Plus, Filter, MapPin, ChevronDown, ChevronUp, ChevronRight,
   MoreVertical, Pencil, X, Loader2, AlertCircle, RefreshCw,
   Camera, User, Clock, Shield, FileText, CheckCircle2,
   Link2, MessageSquare, Lock, RotateCcw, Zap, Star, ChevronLeft,
   Printer, Activity, ArrowRight, Edit3, MessageCircle, Package,
-  Tag, Check,
+  Tag, Check, Building2, Sparkles, Trophy, Rocket,
 } from "lucide-react";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "../components/ui/sheet";
+import { showToast } from "../components/ui/toast";
+import { toast as sonnerToast } from "sonner";
 
-/* ═══════════════════════════════════════════════════════
-   FRAPPE API HELPERS
-═══════════════════════════════════════════════════════ */
 const FRAPPE_BASE = "";
 type FF = [string, string, string | number][];
 
@@ -37,23 +39,36 @@ async function frappeCreate<T>(doctype: string, payload: Partial<T>): Promise<T>
   return (await r.json()).data as T;
 }
 async function frappeUpdate<T>(doctype: string, name: string, payload: Partial<T>): Promise<T> {
-  const r = await fetch(`${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`, { method: "PUT", credentials: "include", headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": csrf() }, body: JSON.stringify(payload) });
+  const r = await fetch(`${FRAPPE_BASE}/api/method/frappe.client.set_value`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": csrf() },
+    body: JSON.stringify({ doctype, name, fieldname: payload })
+  });
   if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error((e as { exc_type?: string }).exc_type || "Update failed"); }
-  return (await r.json()).data as T;
+  const resp = await r.json();
+  return (resp.message || resp.data || {}) as T;
 }
-function csrf() { return (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || ""; }
+function csrf(): string {
+  if (typeof document === "undefined") return "";
+  const match = document.cookie.match(/(?:^|;)\s*(csrf_token|X-Frappe-CSRF-Token)=([^;]+)/);
+  const cookieToken = match ? decodeURIComponent(match[2]) : "";
+  const windowToken = typeof window !== "undefined" ? (window as any).csrf_token : "";
+  return cookieToken || windowToken || "";
+}
 
-/* ═══════════════════════════════════════════════════════
-   TYPES
-═══════════════════════════════════════════════════════ */
+
 interface WOListItem {
   name: string; wo_number?: string; wo_title: string;
   wo_type?: string; wo_sub_type?: string; wo_source?: string;
   status: string; actual_priority?: string; default_priority?: string;
   client_code?: string; client_name?: string;
   contract_code?: string; contract_group?: string;
+  branch_code?: string; branch_name?: string;
   property_code?: string; property_name?: string;
-  zone_code?: string; sub_zone_code?: string; base_unit_code?: string;
+  zone_code?: string; zone_name?: string;
+  sub_zone_code?: string; sub_zone_name?: string;
+  base_unit_code?: string; base_unit_name?: string;
   asset_code?: string; asset_name?: string;
   asset_category?: string; asset_master_category?: string;
   service_group?: string; fault_category?: string; fault_code?: string;
@@ -75,6 +90,7 @@ interface WOListItem {
   reporting_level?: string; approval_criticality?: string;
   closed_by?: string; final_approver?: string; amended_from?: string;
   creation?: string; modified?: string;
+  initiator_type?: string; requested_by?: string;
 }
 
 interface VersionEntry {
@@ -82,9 +98,6 @@ interface VersionEntry {
   data: string; /* JSON string */
 }
 
-/* ═══════════════════════════════════════════════════════
-   HOOKS
-═══════════════════════════════════════════════════════ */
 function useList<T>(doctype: string, fields: string[], filters: FF, deps: unknown[]) {
   const [data, setData] = useState<T[]>([]);
   const [loading, setLoading] = useState(false);
@@ -100,21 +113,19 @@ function useList<T>(doctype: string, fields: string[], filters: FF, deps: unknow
   return { data, loading, error, refetch: fetch_ };
 }
 
-function useDoc<T>(doctype: string, name: string) {
+function useDoc<T>(doctype: string, name: string, refreshKey = 0) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
+  const fetch_ = useCallback(async () => {
     if (!name) return;
-    let cancelled = false;
     setLoading(true); setError(null);
-    frappeGetDoc<T>(doctype, name)
-      .then(d => { if (!cancelled) setData(d); })
-      .catch((e: unknown) => { if (!cancelled) setError((e as Error).message); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [doctype, name]);
-  return { data, loading, error };
+    try { setData(await frappeGetDoc<T>(doctype, name)); }
+    catch (e: unknown) { setError((e as Error).message); }
+    finally { setLoading(false); }
+  }, [doctype, name, refreshKey]);
+  useEffect(() => { fetch_(); }, [fetch_]);
+  return { data, loading, error, refetch: fetch_ };
 }
 
 function useSimpleList<T>(doctype: string, fields: string[], filters: FF, skip = false) {
@@ -124,7 +135,7 @@ function useSimpleList<T>(doctype: string, fields: string[], filters: FF, skip =
     try { setData(await frappeGet<T>(doctype, fields, filters)); }
     catch { /* silent */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doctype, skip]);
+  }, [doctype, skip, JSON.stringify(filters)]);
   useEffect(() => { fetch_(); }, [fetch_]);
   return data;
 }
@@ -133,24 +144,24 @@ function useSimpleList<T>(doctype: string, fields: string[], filters: FF, skip =
    COLOUR / CONFIG MAPS
 ═══════════════════════════════════════════════════════ */
 const STATUS_CFG: Record<string, { bg: string; text: string; dot: string; icon: React.ReactNode }> = {
-  Draft:              { bg: "bg-gray-100",    text: "text-gray-600",           dot: "bg-gray-400",    icon: <Lock className="w-3.5 h-3.5" /> },
-  Open:               { bg: "bg-sky-100",     text: "text-sky-700",            dot: "bg-sky-500",     icon: <Lock className="w-3.5 h-3.5" /> },
-  Assigned:           { bg: "bg-blue-100",    text: "text-blue-700",           dot: "bg-blue-500",    icon: <User className="w-3.5 h-3.5" /> },
-  "In Progress":      { bg: "bg-primary/10",  text: "text-primary",            dot: "bg-primary",     icon: <RotateCcw className="w-3.5 h-3.5" /> },
-  "On Hold":          { bg: "bg-amber-100",   text: "text-amber-700",          dot: "bg-amber-500",   icon: <Clock className="w-3.5 h-3.5" /> },
-  "Pending Parts":    { bg: "bg-orange-100",  text: "text-orange-700",         dot: "bg-orange-500",  icon: <Clock className="w-3.5 h-3.5" /> },
-  "Not Dispatched":   { bg: "bg-gray-100",    text: "text-gray-600",           dot: "bg-gray-400",    icon: <Clock className="w-3.5 h-3.5" /> },
-  "Pending Approval": { bg: "bg-violet-100",  text: "text-violet-700",         dot: "bg-violet-500",  icon: <Shield className="w-3.5 h-3.5" /> },
-  Completed:          { bg: "bg-emerald-100", text: "text-emerald-700",        dot: "bg-emerald-500", icon: <CheckCircle2 className="w-3.5 h-3.5" /> },
-  Closed:             { bg: "bg-muted",       text: "text-muted-foreground",   dot: "bg-gray-400",    icon: <CheckCircle2 className="w-3.5 h-3.5" /> },
-  Cancelled:          { bg: "bg-red-100",     text: "text-red-600",            dot: "bg-red-500",     icon: <X className="w-3.5 h-3.5" /> },
+  Draft: { bg: "bg-gray-100", text: "text-gray-600", dot: "bg-gray-400", icon: <Lock className="w-3.5 h-3.5" /> },
+  Open: { bg: "bg-sky-100", text: "text-sky-700", dot: "bg-sky-500", icon: <Lock className="w-3.5 h-3.5" /> },
+  Assigned: { bg: "bg-blue-100", text: "text-blue-700", dot: "bg-blue-500", icon: <User className="w-3.5 h-3.5" /> },
+  "In Progress": { bg: "bg-primary/10", text: "text-primary", dot: "bg-primary", icon: <RotateCcw className="w-3.5 h-3.5" /> },
+  "On Hold": { bg: "bg-amber-100", text: "text-amber-700", dot: "bg-amber-500", icon: <Clock className="w-3.5 h-3.5" /> },
+  "Pending Parts": { bg: "bg-orange-100", text: "text-orange-700", dot: "bg-orange-500", icon: <Clock className="w-3.5 h-3.5" /> },
+  "Not Dispatched": { bg: "bg-gray-100", text: "text-gray-600", dot: "bg-gray-400", icon: <Clock className="w-3.5 h-3.5" /> },
+  "Pending Approval": { bg: "bg-violet-100", text: "text-violet-700", dot: "bg-violet-500", icon: <Shield className="w-3.5 h-3.5" /> },
+  Completed: { bg: "bg-emerald-100", text: "text-emerald-700", dot: "bg-emerald-500", icon: <CheckCircle2 className="w-3.5 h-3.5" /> },
+  Closed: { bg: "bg-muted", text: "text-muted-foreground", dot: "bg-gray-400", icon: <CheckCircle2 className="w-3.5 h-3.5" /> },
+  Cancelled: { bg: "bg-red-100", text: "text-red-600", dot: "bg-red-500", icon: <X className="w-3.5 h-3.5" /> },
 };
 
 const PRIORITY_CFG: Record<string, { bg: string; text: string; label: string }> = {
-  "P1 - Critical": { bg: "bg-red-500",    text: "text-white", label: "Critical" },
-  "P2 - High":     { bg: "bg-orange-500", text: "text-white", label: "High" },
-  "P3 - Medium":   { bg: "bg-amber-400",  text: "text-black", label: "Medium" },
-  "P4 - Low":      { bg: "bg-emerald-500",text: "text-white", label: "Low" },
+  "P1 - Critical": { bg: "bg-red-500", text: "text-white", label: "Critical" },
+  "P2 - High": { bg: "bg-orange-500", text: "text-white", label: "High" },
+  "P3 - Medium": { bg: "bg-amber-400", text: "text-black", label: "Medium" },
+  "P4 - Low": { bg: "bg-emerald-500", text: "text-white", label: "Low" },
 };
 
 const WO_TYPE_ICONS: Record<string, string> = {
@@ -176,6 +187,90 @@ function timeAgo(d?: string): string {
   return `${days} day${days !== 1 ? "s" : ""} ago`;
 }
 function isOverdue(d?: string) { return !!d && new Date(d) < new Date(); }
+
+/* ═══════════════════════════════════════════════════════
+   DUE DATE CALCULATION LOGIC
+═══════════════════════════════════════════════════════ */
+interface DueDateInfo {
+  isOverdue: boolean;
+  dueDate: string | null;
+  dueType: 'schedule' | 'response_sla' | 'resolution_sla' | 'none';
+  dueDateLabel: string;
+  urgencyLevel: 'critical' | 'high' | 'medium' | 'normal';
+}
+
+function calculateDueDateInfo(wo: WOListItem): DueDateInfo {
+  const now = new Date();
+  const completedOrClosed = wo.status === "Completed" || wo.status === "Closed" || wo.status === "Cancelled";
+  
+  // Priority 1: Resolution SLA Target (most critical for completion)
+  if (wo.resolution_sla_target && !completedOrClosed) {
+    const resolutionDate = new Date(wo.resolution_sla_target);
+    const isOverdue = resolutionDate < now;
+    const hoursDiff = (resolutionDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+    
+    let urgencyLevel: DueDateInfo['urgencyLevel'] = 'normal';
+    if (isOverdue) urgencyLevel = 'critical';
+    else if (hoursDiff <= 24) urgencyLevel = 'high';
+    else if (hoursDiff <= 72) urgencyLevel = 'medium';
+    
+    return {
+      isOverdue,
+      dueDate: wo.resolution_sla_target,
+      dueType: 'resolution_sla',
+      dueDateLabel: 'Resolution Due',
+      urgencyLevel
+    };
+  }
+  
+  // Priority 2: Response SLA Target (critical for initial response)
+  if (wo.response_sla_target && !completedOrClosed && wo.status === "Open") {
+    const responseDate = new Date(wo.response_sla_target);
+    const isOverdue = responseDate < now;
+    const hoursDiff = (responseDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+    
+    let urgencyLevel: DueDateInfo['urgencyLevel'] = 'normal';
+    if (isOverdue) urgencyLevel = 'critical';
+    else if (hoursDiff <= 4) urgencyLevel = 'high'; // Response SLAs are typically shorter
+    else if (hoursDiff <= 12) urgencyLevel = 'medium';
+    
+    return {
+      isOverdue,
+      dueDate: wo.response_sla_target,
+      dueType: 'response_sla',
+      dueDateLabel: 'Response Due',
+      urgencyLevel
+    };
+  }
+  
+  // Priority 3: Scheduled Start Date (for planned work)
+  if (wo.schedule_start_date && !completedOrClosed) {
+    const scheduleDate = new Date(wo.schedule_start_date + (wo.schedule_start_time ? ' ' + wo.schedule_start_time : ''));
+    const isOverdue = scheduleDate < now;
+    const hoursDiff = (scheduleDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+    
+    let urgencyLevel: DueDateInfo['urgencyLevel'] = 'normal';
+    if (isOverdue) urgencyLevel = 'high'; // Overdue schedule is less critical than SLA breach
+    else if (hoursDiff <= 24) urgencyLevel = 'medium';
+    
+    return {
+      isOverdue,
+      dueDate: wo.schedule_start_date + (wo.schedule_start_time ? ' ' + wo.schedule_start_time : ''),
+      dueType: 'schedule',
+      dueDateLabel: 'Scheduled Start',
+      urgencyLevel
+    };
+  }
+  
+  // No due date applicable
+  return {
+    isOverdue: false,
+    dueDate: null,
+    dueType: 'none',
+    dueDateLabel: 'Not Scheduled',
+    urgencyLevel: 'normal'
+  };
+}
 
 /* ═══════════════════════════════════════════════════════
    MICRO HELPERS
@@ -219,14 +314,14 @@ function Avatar({ name, size = "sm" }: { name?: string; size?: "sm" | "md" | "lg
    PRINT LOGIC — opens styled window + window.print()
 ═══════════════════════════════════════════════════════ */
 const PRINT_SECTIONS = [
-  { id: "details",         label: "WorkOrder Details",     icon: <FileText className="w-4 h-4" /> },
-  { id: "status_history",  label: "Status History",        icon: <Activity className="w-4 h-4" /> },
-  { id: "task_details",    label: "Task Details",          icon: <CheckCircle2 className="w-4 h-4" /> },
-  { id: "before_photo",    label: "Before Pictures",       icon: <Camera className="w-4 h-4" /> },
-  { id: "after_photo",     label: "After Pictures",        icon: <Camera className="w-4 h-4" /> },
-  { id: "cust_signature",  label: "Customer Signature",    icon: <Edit3 className="w-4 h-4" /> },
-  { id: "tech_signature",  label: "Technician Signature",  icon: <Edit3 className="w-4 h-4" /> },
-  { id: "cust_feedback",   label: "Customer Feedback",     icon: <MessageCircle className="w-4 h-4" /> },
+  { id: "details", label: "WorkOrder Details", icon: <FileText className="w-4 h-4" /> },
+  { id: "status_history", label: "Status History", icon: <Activity className="w-4 h-4" /> },
+  { id: "task_details", label: "Task Details", icon: <CheckCircle2 className="w-4 h-4" /> },
+  { id: "before_photo", label: "Before Pictures", icon: <Camera className="w-4 h-4" /> },
+  { id: "after_photo", label: "After Pictures", icon: <Camera className="w-4 h-4" /> },
+  { id: "cust_signature", label: "Customer Signature", icon: <Edit3 className="w-4 h-4" /> },
+  { id: "tech_signature", label: "Technician Signature", icon: <Edit3 className="w-4 h-4" /> },
+  { id: "cust_feedback", label: "Customer Feedback", icon: <MessageCircle className="w-4 h-4" /> },
 ] as const;
 type PrintSectionId = typeof PRINT_SECTIONS[number]["id"];
 
@@ -235,7 +330,7 @@ function buildPrintHTML(wo: WOListItem, sections: Set<PrintSectionId>): string {
     `<tr><td class="label">${label}</td><td class="val">${val || "—"}</td>${label2 ? `<td class="label">${label2}</td><td class="val">${val2 || "—"}</td>` : '<td colspan="2"></td>'}</tr>`;
 
   const slaBreachBadge = (breached?: 0 | 1) =>
-    breached ? '<span class="badge-red">Breached</span>' : '<span class="badge-green">Met</span>';
+    breached ? '<span class="badge-red">Breached</span>' : '<span class="badge-green">Fulfilled</span>';
 
   const ratingStars = (rating?: string) => {
     const n = rating ? parseInt(rating[0]) : 0;
@@ -327,7 +422,7 @@ ${sections.has("details") ? `
     ${row("Work Order", wo.wo_number || wo.name, "Status", wo.status)}
     ${row("Reported Date", formatDateTime(wo.creation), "Scheduled Date", formatDateTime(wo.schedule_start_date + (wo.schedule_start_time ? " " + wo.schedule_start_time : "")))}
     ${row("Work Start Date", formatDateTime(wo.actual_start), "Completion Date", formatDateTime(wo.actual_end))}
-    ${row("Reported By", wo.client_name || wo.client_code, "Call Booked By", wo.assigned_by || "—")}
+    ${row("Reported By", wo.requested_by || "—", "Call Booked By", wo.assigned_by || "—")}
     ${row("Asset Code", wo.asset_code, "Priority", wo.actual_priority)}
     ${row("Master Community", wo.property_name || wo.property_code, "Asset", wo.asset_name)}
     ${row("Sub Community", wo.sub_zone_code, "Department", wo.asset_master_category)}
@@ -404,7 +499,7 @@ ${sections.has("before_photo") ? `
   <div class="section-title">Before Photo</div>
   <div class="photo-grid">
     <div class="photo-box">
-      ${wo.before_photo ? `<img src="${wo.before_photo}" alt="Before"/>` : '<div class="photo-placeholder">No photo attached</div>'}
+      ${wo.before_photo ? `<img src="${wo.before_photo.startsWith('http') || wo.before_photo.startsWith('blob:') ? wo.before_photo : `http://facility.quantcloud.in${wo.before_photo}`}" alt="Before"/>` : '<div class="photo-placeholder">No photo attached</div>'}
       <div class="photo-label">Before Work</div>
     </div>
   </div>
@@ -416,7 +511,7 @@ ${sections.has("after_photo") ? `
   <div class="section-title">After Photo</div>
   <div class="photo-grid">
     <div class="photo-box">
-      ${wo.after_photo ? `<img src="${wo.after_photo}" alt="After"/>` : '<div class="photo-placeholder">No photo attached</div>'}
+      ${wo.after_photo ? `<img src="${wo.after_photo.startsWith('http') || wo.after_photo.startsWith('blob:') ? wo.after_photo : `http://facility.quantcloud.in${wo.after_photo}`}" alt="After"/>` : '<div class="photo-placeholder">No photo attached</div>'}
       <div class="photo-label">After Work Completed</div>
     </div>
   </div>
@@ -598,11 +693,11 @@ function parseVersionData(entry: VersionEntry): ActivityItem {
 }
 
 const ACTIVITY_ICON_CFG: Record<ActivityItem["action"], { icon: React.ReactNode; bg: string; text: string }> = {
-  updated:  { icon: <RotateCcw className="w-4 h-4" />, bg: "bg-sky-100",    text: "text-sky-600"    },
-  created:  { icon: <Plus className="w-4 h-4" />,      bg: "bg-emerald-100",text: "text-emerald-600" },
-  worklog:  { icon: <FileText className="w-4 h-4" />,  bg: "bg-violet-100", text: "text-violet-600"  },
-  comment:  { icon: <MessageSquare className="w-4 h-4" />, bg: "bg-amber-100", text: "text-amber-600" },
-  status:   { icon: <Activity className="w-4 h-4" />,  bg: "bg-blue-100",   text: "text-blue-600"   },
+  updated: { icon: <RotateCcw className="w-4 h-4" />, bg: "bg-sky-100", text: "text-sky-600" },
+  created: { icon: <Plus className="w-4 h-4" />, bg: "bg-emerald-100", text: "text-emerald-600" },
+  worklog: { icon: <FileText className="w-4 h-4" />, bg: "bg-violet-100", text: "text-violet-600" },
+  comment: { icon: <MessageSquare className="w-4 h-4" />, bg: "bg-amber-100", text: "text-amber-600" },
+  status: { icon: <Activity className="w-4 h-4" />, bg: "bg-blue-100", text: "text-blue-600" },
 };
 
 function ActivitySidebar({ woName, onClose }: { woName: string; onClose: () => void }) {
@@ -770,18 +865,26 @@ function ActivitySidebar({ woName, onClose }: { woName: string; onClose: () => v
    WO CARD (left list)
 ═══════════════════════════════════════════════════════ */
 function WOCard({ wo, selected, onClick }: { wo: WOListItem; selected: boolean; onClick: () => void }) {
-  const overdue = isOverdue(wo.schedule_start_date) && wo.status !== "Completed" && wo.status !== "Closed";
+  const dueDateInfo = calculateDueDateInfo(wo);
   return (
     <button onClick={onClick}
       className={`w-full text-left px-4 py-3.5 border-b border-border flex gap-3 transition-colors
         ${selected ? "bg-primary/5 border-l-2 border-l-primary" : "hover:bg-muted/40"}`}>
-      <div className="w-11 h-11 rounded-xl bg-muted flex items-center justify-center shrink-0 text-xl">
-        {WO_TYPE_ICONS[wo.wo_type || ""] || "📋"}
+      <div className="w-12 h-12 rounded-xl bg-muted/60 flex items-center justify-center shrink-0 border border-border/40 overflow-hidden transition-all group-hover:bg-muted/80">
+        {wo.before_photo ? (
+          <img
+            src={wo.before_photo.startsWith('http') || wo.before_photo.startsWith('blob:') ? wo.before_photo : `http://facility.quantcloud.in${wo.before_photo}`}
+            className="w-full h-full object-cover"
+            alt="WO"
+          />
+        ) : (
+          <span className="text-xl opacity-80">{WO_TYPE_ICONS[wo.wo_type || ""] || "📋"}</span>
+        )}
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-foreground truncate leading-tight">{wo.wo_title}</p>
         <p className="text-xs text-muted-foreground mt-0.5 truncate">
-          Requested by {wo.assigned_technician || wo.assigned_to || "—"}
+          Requested by {wo.requested_by || "—"}
         </p>
         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
           <span className={`inline-flex items-center gap-1 text-xs font-medium ${STATUS_CFG[wo.status]?.text || "text-muted-foreground"}`}>
@@ -793,7 +896,17 @@ function WOCard({ wo, selected, onClick }: { wo: WOListItem; selected: boolean; 
         {wo.assigned_to && <Avatar name={wo.assigned_technician || wo.assigned_to} />}
         <span className="text-[11px] text-muted-foreground font-mono">#{wo.wo_number || wo.name}</span>
         <div className="flex items-center gap-1 flex-wrap justify-end">
-          {overdue && <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white">Overdue</span>}
+          {dueDateInfo.isOverdue && (
+            <span className={`px-2 py-0.5 rounded text-[10px] font-bold text-white ${
+              dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-600' : 
+              dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' : 
+              'bg-amber-500'
+            }`}>
+              {dueDateInfo.dueType === 'resolution_sla' ? 'SLA Overdue' : 
+               dueDateInfo.dueType === 'response_sla' ? 'Response Overdue' : 
+               'Overdue'}
+            </span>
+          )}
           <PriBadge pri={wo.actual_priority} />
         </div>
       </div>
@@ -825,8 +938,8 @@ function StatusBar({ current, onChange }: { current: string; onChange: (s: strin
 /* ═══════════════════════════════════════════════════════
    DETAIL VIEW  (now has Print + Activity buttons)
 ═══════════════════════════════════════════════════════ */
-function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange: () => void }) {
-  const { data: wo, loading, error } = useDoc<WOListItem>("Work Orders", woName);
+function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 }: { woName: string; onStatusChange: () => void; onEdit: (name: string) => void; onSRClick: (srNumber: string) => void; refreshKey?: number }) {
+  const { data: wo, loading, error } = useDoc<WOListItem>("Work Orders", woName, refreshKey);
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [showPrint, setShowPrint] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
@@ -836,7 +949,44 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
   const handleStatusChange = async (newStatus: string) => {
     if (!wo) return;
     setUpdatingStatus(true);
-    try { await frappeUpdate("Work Orders", woName, { status: newStatus }); onStatusChange(); }
+    try { 
+      await frappeUpdate("Work Orders", woName, { status: newStatus }); 
+      
+      // 🎯 Status change toast notification
+      const statusConfig = STATUS_CFG[newStatus] || STATUS_CFG["Draft"];
+      sonnerToast.success(
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <div className="w-10 h-10 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center border border-white/20">
+              {statusConfig.icon}
+            </div>
+            <div className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-emerald-400 rounded-full animate-pulse border-2 border-white" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="font-semibold text-sm text-white leading-tight">Status Updated</span>
+            <span className="text-xs text-white/80 leading-tight">Changed to {newStatus}</span>
+          </div>
+        </div>,
+        {
+          duration: 3000,
+          position: 'top-right',
+          icon: null,
+          style: {
+            background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+            color: 'white',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            borderRadius: '16px',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+            padding: '20px',
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+          },
+          className: 'animate-slide-in-right',
+        }
+      );
+      
+      onStatusChange(); 
+    }
     catch { /* silent */ }
     finally { setUpdatingStatus(false); }
   };
@@ -855,17 +1005,17 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
     </div>
   );
 
-  const Row = ({ label, val, link, warn }: { label: string; val?: string | null; link?: boolean; warn?: boolean }) => (
+  const Row = ({ label, val, link, warn, onClick }: { label: string; val?: string | null; link?: boolean; warn?: boolean; onClick?: () => void }) => (
     <div className="flex items-start justify-between py-2.5 border-b border-border last:border-0">
       <span className="text-xs text-muted-foreground font-medium w-40 shrink-0">{label}</span>
       {link
-        ? <span className="text-sm text-primary font-medium cursor-pointer hover:underline text-right">{val || "—"}</span>
+        ? <span className="text-sm text-primary font-medium cursor-pointer hover:underline text-right" onClick={onClick}>{val || "—"}</span>
         : <span className={`text-sm font-medium text-right ${warn ? "text-red-500 font-semibold" : "text-foreground"}`}>{val || "—"}</span>}
     </div>
   );
 
   const slaResBreached = !!wo.resolution_sla_breach;
-  const overdue = wo.resolution_sla_target && new Date(wo.resolution_sla_target) < new Date() && wo.status !== "Completed" && wo.status !== "Closed";
+  const dueDateInfo = calculateDueDateInfo(wo);
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -902,13 +1052,15 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
                 <span className="hidden sm:inline">Print</span>
               </button>
 
-              <button className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-lg text-primary hover:bg-primary/5 transition-colors">
+              <button
+                onClick={() => onEdit(woName)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-lg text-primary hover:bg-primary/5 transition-colors">
                 <Pencil className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Edit</span>
               </button>
-              <button className="p-1.5 rounded-lg hover:bg-muted">
+              {/* <button className="p-1.5 rounded-lg hover:bg-muted">
                 <MoreVertical className="w-4 h-4 text-muted-foreground" />
-              </button>
+              </button> */}
             </div>
           </div>
 
@@ -930,10 +1082,38 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
           <div className="grid grid-cols-2 gap-6 pb-5 border-b border-border mb-2">
             <div>
               <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Due Date</p>
-              <p className={`text-sm font-semibold ${overdue ? "text-red-500" : "text-foreground"}`}>
-                {wo.schedule_start_date ? formatDate(wo.schedule_start_date) : "—"}
-                {wo.schedule_start_time ? ` by ${wo.schedule_start_time}` : ""}
+              <p className={`text-sm font-semibold ${
+                dueDateInfo.urgencyLevel === 'critical' ? 'text-red-500' : 
+                dueDateInfo.urgencyLevel === 'high' ? 'text-orange-500' : 
+                dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-500' : 
+                'text-foreground'
+              }`}>
+                {dueDateInfo.dueDate ? (
+                  <>
+                    {dueDateInfo.dueType === 'schedule' && wo.schedule_start_date && (
+                      <>
+                        {formatDate(wo.schedule_start_date)}
+                        {wo.schedule_start_time && ` by ${wo.schedule_start_time}`}
+                      </>
+                    )}
+                    {dueDateInfo.dueType.includes('sla') && formatDateTime(dueDateInfo.dueDate)}
+                  </>
+                ) : (
+                  "—"
+                )}
               </p>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-xs text-muted-foreground">{dueDateInfo.dueDateLabel}</span>
+                {dueDateInfo.isOverdue && (
+                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold text-white ${
+                    dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-500' : 
+                    dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' : 
+                    'bg-amber-500'
+                  }`}>
+                    OVERDUE
+                  </span>
+                )}
+              </div>
               {wo.wo_type === "Planned Preventive" && <p className="text-xs text-muted-foreground mt-1">Repeats monthly</p>}
             </div>
             <div>
@@ -961,7 +1141,12 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
                   <MapPin className="w-4 h-4 text-muted-foreground" /><span>{wo.property_name || wo.property_code || "—"}</span>
                 </div>
                 {wo.location_full_path && <p className="text-xs text-muted-foreground pl-6">{wo.location_full_path}</p>}
-                {[["Zone", wo.zone_code], ["Sub Zone", wo.sub_zone_code], ["Base Unit", wo.base_unit_code]].map(([l, v]) =>
+                {[
+                  ["Branch", wo.branch_name || wo.branch_code],
+                  ["Zone", wo.zone_name || wo.zone_code],
+                  ["Sub Zone", wo.sub_zone_name || wo.sub_zone_code],
+                  ["Base Unit", wo.base_unit_name || wo.base_unit_code]
+                ].map(([l, v]) =>
                   v ? <div key={l} className="flex gap-2 text-xs text-muted-foreground mt-0.5 pl-6"><span className="font-medium">{l}:</span><span>{v}</span></div> : null
                 )}
               </div>
@@ -989,7 +1174,8 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
               <div>
                 <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Work Order ID</p>
                 <p className="text-sm font-mono font-semibold text-foreground">#{wo.wo_number || wo.name}</p>
-                {wo.sr_number && <p className="text-xs text-primary mt-1 cursor-pointer hover:underline">SR: {wo.sr_number}</p>}
+                <p className="text-xs text-muted-foreground mt-1">Requested By: <span className="font-semibold text-foreground">{wo.requested_by || "—"}</span></p>
+                {wo.sr_number && <p className="text-xs text-primary mt-1 cursor-pointer hover:underline" onClick={() => onSRClick(wo.sr_number!)}>SR: {wo.sr_number}</p>}
               </div>
             </div>
           </Sec>
@@ -1008,7 +1194,7 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
               {[
                 { label: "Spares (OMR)", val: wo.spares_amount ? `OMR ${wo.spares_amount.toLocaleString()}` : "—", color: "border-l-4 border-l-blue-400" },
                 { label: "Service (OMR)", val: wo.service_amount ? `OMR ${wo.service_amount.toLocaleString()}` : "—", color: "border-l-4 border-l-violet-400" },
-                { label: "Total Cost",    val: wo.total_wo_cost ? `OMR ${wo.total_wo_cost.toLocaleString()}` : "—", color: "border-l-4 border-l-emerald-400" },
+                { label: "Total Cost", val: wo.total_wo_cost ? `OMR ${wo.total_wo_cost.toLocaleString()}` : "—", color: "border-l-4 border-l-emerald-400" },
               ].map(item => (
                 <div key={item.label} className={`bg-muted/50 rounded-xl p-3 ${item.color}`}>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">{item.label}</p>
@@ -1023,25 +1209,87 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
             <Row label="Materials Status" val={wo.material_request_status} />
           </Sec>
 
-          <Sec id="sla" title="SLA Tracking">
-            <div className="grid grid-cols-2 gap-3 mb-2">
+          <Sec id="sla" title="SLA & Schedule Tracking">
+            {/* Primary Due Date Summary */}
+            <div className={`rounded-xl p-4 border mb-4 ${
+              dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-50 border-red-200' : 
+              dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-50 border-orange-200' : 
+              dueDateInfo.urgencyLevel === 'medium' ? 'bg-amber-50 border-amber-200' : 
+              'bg-muted/40 border-border'
+            }`}>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-bold text-foreground">{dueDateInfo.dueDateLabel}</p>
+                {dueDateInfo.isOverdue && (
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold text-white ${
+                    dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-500' : 
+                    dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' : 
+                    'bg-amber-500'
+                  }`}>
+                    OVERDUE
+                  </span>
+                )}
+              </div>
+              <p className={`text-lg font-semibold mb-1 ${
+                dueDateInfo.urgencyLevel === 'critical' ? 'text-red-600' : 
+                dueDateInfo.urgencyLevel === 'high' ? 'text-orange-600' : 
+                dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-600' : 
+                'text-foreground'
+              }`}>
+                {dueDateInfo.dueDate ? (
+                  dueDateInfo.dueType === 'schedule' && wo.schedule_start_date ? (
+                    formatDate(wo.schedule_start_date) + (wo.schedule_start_time ? " " + wo.schedule_start_time : "")
+                  ) : (
+                    formatDateTime(dueDateInfo.dueDate)
+                  )
+                ) : (
+                  "No due date set"
+                )}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {dueDateInfo.dueType === 'resolution_sla' ? 'Resolution SLA Target' : 
+                 dueDateInfo.dueType === 'response_sla' ? 'Response SLA Target' : 
+                 dueDateInfo.dueType === 'schedule' ? 'Scheduled Start Time' : 
+                 'No Due Date'}
+              </p>
+            </div>
+
+            {/* Detailed SLA and Schedule Information */}
+            <div className="grid grid-cols-1 gap-3 mb-2">
+              {/* Scheduled Start */}
+              <div className={`rounded-xl p-3 border ${
+                dueDateInfo.dueType === 'schedule' && dueDateInfo.isOverdue ? 
+                "bg-orange-50 border-orange-200" : "bg-muted/40 border-border"
+              }`}>
+                <p className="text-xs font-bold text-muted-foreground mb-1">Scheduled Start</p>
+                <p className="text-xs text-foreground">
+                  {wo.schedule_start_date ? formatDate(wo.schedule_start_date) + (wo.schedule_start_time ? " " + wo.schedule_start_time : "") : "—"}
+                </p>
+                {dueDateInfo.dueType === 'schedule' && dueDateInfo.isOverdue && (
+                  <span className="text-xs font-bold text-orange-600 mt-1 block">⚠ Overdue</span>
+                )}
+              </div>
+
+              {/* Response SLA */}
               <div className={`rounded-xl p-3 border ${wo.response_sla_breach ? "bg-red-50 border-red-200" : "bg-emerald-50 border-emerald-200"}`}>
                 <p className="text-xs font-bold text-muted-foreground mb-1">Response SLA</p>
                 <p className="text-xs text-foreground">Target: {formatDateTime(wo.response_sla_target)}</p>
                 <p className="text-xs text-foreground">Actual: {formatDateTime(wo.response_sla_actual)}</p>
                 <span className={`text-xs font-bold mt-1 block ${wo.response_sla_breach ? "text-red-500" : "text-emerald-600"}`}>
-                  {wo.response_sla_breach ? "⚠ Breached" : "✓ Met"}
+                  {wo.response_sla_breach ? "⚠ Breached" : "✓ Fulfilled"}
                 </span>
               </div>
+
+              {/* Resolution SLA */}
               <div className={`rounded-xl p-3 border ${slaResBreached ? "bg-red-50 border-red-200" : "bg-muted/40 border-border"}`}>
                 <p className="text-xs font-bold text-muted-foreground mb-1">Resolution SLA</p>
                 <p className="text-xs text-foreground">Target: {formatDateTime(wo.resolution_sla_target)}</p>
                 <p className="text-xs text-foreground">Actual: {formatDateTime(wo.resolution_sla_actual)}</p>
                 <span className={`text-xs font-bold mt-1 block ${slaResBreached ? "text-red-500" : "text-emerald-600"}`}>
-                  {slaResBreached ? "⚠ Breached" : "✓ Met"}
+                  {slaResBreached ? "⚠ Breached" : "✓ Fulfilled"}
                 </span>
               </div>
             </div>
+            
             {wo.extension_date && <Row label="Extension Date" val={formatDate(wo.extension_date)} />}
             {wo.extension_reason && <Row label="Extension Reason" val={wo.extension_reason} />}
           </Sec>
@@ -1051,10 +1299,10 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
               {[{ label: "Before Photo", url: wo.before_photo }, { label: "After Photo", url: wo.after_photo }].map(({ label, url }) => (
                 <div key={label} className="border border-border rounded-xl overflow-hidden">
                   {url
-                    ? <img src={url} alt={label} className="w-full h-36 object-cover" />
+                    ? <img src={url.startsWith('http') || url.startsWith('blob:') ? url : `http://facility.quantcloud.in${url}`} alt={label} className="w-full h-36 object-cover" />
                     : <div className="h-36 bg-muted/40 flex flex-col items-center justify-center gap-1 text-muted-foreground">
-                        <Camera className="w-6 h-6" /><p className="text-xs">No photo</p>
-                      </div>}
+                      <Camera className="w-6 h-6" /><p className="text-xs">No photo</p>
+                    </div>}
                   <div className="px-3 py-2 bg-muted/30 border-t border-border">
                     <p className="text-xs font-semibold text-foreground">{label}</p>
                   </div>
@@ -1067,7 +1315,7 @@ function DetailView({ woName, onStatusChange }: { woName: string; onStatusChange
             <Row label="Customer Rating" val={wo.customer_rating} />
             <Row label="Closed By" val={wo.closed_by} />
             <Row label="Final Approver" val={wo.final_approver} link />
-            {wo.sr_number && <Row label="Service Request" val={wo.sr_number} link />}
+            {wo.sr_number && <Row label="Service Request" val={wo.sr_number} link onClick={() => onSRClick(wo.sr_number!)} />}
             {wo.amended_from && <Row label="Amended From" val={wo.amended_from} link />}
           </Sec>
         </div>
@@ -1089,10 +1337,15 @@ const SCHEDULE_FREQS = ["None", "Daily", "Weekly", "Monthly", "Yearly"] as const
 type SchedFreq = typeof SCHEDULE_FREQS[number];
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-interface WOForm {
+ interface WOForm {
   wo_title: string; wo_type: string; wo_sub_type: string; wo_source: string;
   client_code: string; contract_code: string;
-  property_code: string; zone_code: string; sub_zone_code: string; base_unit_code: string;
+  branch_code: string; branch_name: string;
+  property_code: string; property_name: string;
+  zone_code: string; zone_name: string;
+  sub_zone_code: string; sub_zone_name: string;
+  base_unit_code: string; base_unit_name: string;
+  location_full_path: string;
   asset_code: string; service_group: string; fault_category: string; fault_code: string;
   actual_priority: string; approval_criticality: string;
   assigned_to: string; secondary_tech: string;
@@ -1100,12 +1353,17 @@ interface WOForm {
   planned_duration_min: string; sr_number: string;
   schedFreq: SchedFreq; schedDays: number[]; schedEvery: string;
   description: string; status: string;
+  _pending_before?: File;
+  _pending_after?: File;
 }
 
 const BLANK_FORM: WOForm = {
   wo_title: "", wo_type: "", wo_sub_type: "", wo_source: "",
   client_code: "", contract_code: "",
-  property_code: "", zone_code: "", sub_zone_code: "", base_unit_code: "",
+  branch_code: "", branch_name: "", property_code: "", property_name: "",
+  zone_code: "", zone_name: "", sub_zone_code: "", sub_zone_name: "",
+  base_unit_code: "", base_unit_name: "",
+  location_full_path: "",
   asset_code: "", service_group: "", fault_category: "", fault_code: "",
   actual_priority: "", approval_criticality: "",
   assigned_to: "", secondary_tech: "",
@@ -1119,7 +1377,12 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
   const [form, setForm] = useState<WOForm>(BLANK_FORM);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const set = (k: keyof WOForm) => (v: string | number[]) => setForm(f => ({ ...f, [k]: v }));
+  const [step, setStep] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const [previewBefore, setPreviewBefore] = useState<string | null>(null);
+  const [previewAfter, setPreviewAfter] = useState<string | null>(null);
+
+  const set = useCallback((k: keyof WOForm) => (v: string | number[]) => setForm(f => ({ ...f, [k]: v })), []);
 
   const { data: existingDoc } = useDoc<WOListItem>("Work Orders", editName || "");
   useEffect(() => {
@@ -1128,7 +1391,13 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
         ...f,
         wo_title: existingDoc.wo_title || "", wo_type: existingDoc.wo_type || "", wo_sub_type: existingDoc.wo_sub_type || "",
         wo_source: existingDoc.wo_source || "", client_code: existingDoc.client_code || "", contract_code: existingDoc.contract_code || "",
-        property_code: existingDoc.property_code || "", zone_code: existingDoc.zone_code || "", asset_code: existingDoc.asset_code || "",
+        branch_code: existingDoc.branch_code || "", branch_name: existingDoc.branch_name || "",
+        property_code: existingDoc.property_code || "", property_name: existingDoc.property_name || "",
+        zone_code: existingDoc.zone_code || "", zone_name: existingDoc.zone_name || "",
+        sub_zone_code: existingDoc.sub_zone_code || "", sub_zone_name: existingDoc.sub_zone_name || "",
+        base_unit_code: existingDoc.base_unit_code || "", base_unit_name: existingDoc.base_unit_name || "",
+        location_full_path: existingDoc.location_full_path || "",
+        asset_code: existingDoc.asset_code || "",
         service_group: existingDoc.service_group || "", fault_category: existingDoc.fault_category || "",
         actual_priority: existingDoc.actual_priority || "", approval_criticality: existingDoc.approval_criticality || "",
         assigned_to: existingDoc.assigned_to || "", secondary_tech: existingDoc.secondary_tech || "",
@@ -1137,31 +1406,123 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
         planned_duration_min: existingDoc.planned_duration_min ? String(existingDoc.planned_duration_min) : "",
         status: existingDoc.status || "Open", description: existingDoc.work_done_notes || "",
       }));
+      setPreviewBefore(existingDoc.before_photo || null);
+      setPreviewAfter(existingDoc.after_photo || null);
     }
   }, [editName, existingDoc]);
 
   const clients = useSimpleList<{ name: string; client_name: string }>("Client", ["name", "client_name"], []);
-  const properties = useSimpleList<{ name: string; property_code: string; property_name: string }>("Property", ["name", "property_code", "property_name"], [["is_active", "=", 1]]);
-  const zones = useSimpleList<{ name: string; zone_code: string; zone_name: string }>("Zone", ["name", "zone_code", "zone_name"], form.property_code ? [["property_code", "=", form.property_code]] : [], !form.property_code);
-  const subZones = useSimpleList<{ name: string; sub_zone_code: string; sub_zone_name: string }>("Sub Zone", ["name", "sub_zone_code", "sub_zone_name"], form.zone_code ? [["zone_code", "=", form.zone_code]] : [], !form.zone_code);
+  const branches = useSimpleList<{ name: string; branch_code: string; branch_name: string }>("Branch", ["name", "branch_code", "branch_name"], [["is_active", "=", 1]]);
+  const properties = useSimpleList<{ name: string; property_code: string; property_name: string }>("Property", ["name", "property_code", "property_name"], 
+    form.branch_code ? [["branch_code", "=", form.branch_code], ["is_active", "=", 1]] : [["is_active", "=", 1]]
+  );
+  const zones = useSimpleList<{ name: string; zone_code: string; zone_name: string }>("Zone", ["name", "zone_code", "zone_name"], form.property_code ? [["property_code", "=", form.property_code], ["is_active", "=", 1]] : [], !form.property_code);
+  const subZones = useSimpleList<{ name: string; sub_zone_code: string; sub_zone_name: string }>("Sub Zone", ["name", "sub_zone_code", "sub_zone_name"], form.zone_code ? [["zone_code", "=", form.zone_code], ["is_active", "=", 1]] : [], !form.zone_code);
+  const baseUnits = useSimpleList<{ name: string; base_unit_code: string; base_unit_name: string }>("Base Unit", ["name", "base_unit_code", "base_unit_name"], form.sub_zone_code ? [["sub_zone_code", "=", form.sub_zone_code], ["is_active", "=", 1]] : [], !form.sub_zone_code);
   const assets = useSimpleList<{ name: string; asset_code: string; asset_name: string }>("CFAM Asset", ["name", "asset_code", "asset_name"], form.property_code ? [["property_code", "=", form.property_code], ["asset_status", "=", "Active"]] : [], !form.property_code);
   const contracts = useSimpleList<{ name: string; contract_title: string }>("FM Contract", ["name", "contract_title"], form.client_code ? [["client_code", "=", form.client_code], ["status", "=", "Active"]] : [], !form.client_code);
   const technicians = useSimpleList<{ name: string; resource_name: string }>("Resource", ["name", "resource_name"], []);
   const faultCodes = useSimpleList<{ name: string }>("Fault Code", ["name"], []);
+  const serviceRequests = useSimpleList<{ name: string; sr_number: string; sr_title: string }>("Service Request", ["name", "sr_number", "sr_title"], [["status", "=", "Open"]]);
+
+  /* dynamic path update */
+  useEffect(() => {
+    const parts: string[] = [];
+    let bName = "", pName = "", zName = "", szName = "", buName = "";
+
+    if (form.branch_code) {
+      const b = (branches as any[]).find(x => x.name === form.branch_code);
+      if (b) bName = b.branch_name;
+    }
+    if (form.property_code) {
+      const p = (properties as any[]).find(x => x.name === form.property_code);
+      if (p) { pName = p.property_name; parts.push(pName); }
+    }
+    if (form.zone_code) {
+      const z = (zones as any[]).find(x => x.name === form.zone_code);
+      if (z) { zName = z.zone_name; parts.push(zName); }
+    }
+    if (form.sub_zone_code) {
+      const s = (subZones as any[]).find(x => x.name === form.sub_zone_code);
+      if (s) { szName = s.sub_zone_name; parts.push(szName); }
+    }
+    if (form.base_unit_code) {
+      const bu = (baseUnits as any[]).find(x => x.name === form.base_unit_code);
+      if (bu) { buName = bu.base_unit_name; parts.push(buName); }
+    }
+
+    const newPath = parts.join(" / ");
+    if (
+      newPath !== form.location_full_path ||
+      bName !== form.branch_name ||
+      pName !== form.property_name ||
+      zName !== form.zone_name ||
+      szName !== form.sub_zone_name ||
+      buName !== form.base_unit_name
+    ) {
+      setForm(f => ({
+        ...f,
+        location_full_path: newPath,
+        branch_name: bName,
+        property_name: pName,
+        zone_name: zName,
+        sub_zone_name: szName,
+        base_unit_name: buName,
+      }));
+    }
+  }, [form.branch_code, form.property_code, form.zone_code, form.sub_zone_code, form.base_unit_code, branches, properties, zones, subZones, baseUnits]);
+
+  const handleBranchChange = (v: string) => {
+    setForm(f => ({ ...f, branch_code: v, property_code: "", zone_code: "", sub_zone_code: "", base_unit_code: "", asset_code: "" }));
+  };
+  const handlePropertyChange = (v: string) => {
+    setForm(f => ({ ...f, property_code: v, zone_code: "", sub_zone_code: "", base_unit_code: "", asset_code: "" }));
+  };
+  const handleZoneChange = (v: string) => {
+    setForm(f => ({ ...f, zone_code: v, sub_zone_code: "", base_unit_code: "" }));
+  };
+  const handleSubZoneChange = (v: string) => {
+    setForm(f => ({ ...f, sub_zone_code: v, base_unit_code: "" }));
+  };
 
   const toggleDay = (d: number) => {
     const cur = form.schedDays as number[];
     set("schedDays")(cur.includes(d) ? cur.filter(x => x !== d) : [...cur, d]);
   };
 
+  const handleImageUpload = (type: "before" | "after") => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setErr('Please upload an image file');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setErr('Image size should be less than 5MB');
+      return;
+    }
+    if (type === "before") {
+      setPreviewBefore(URL.createObjectURL(file));
+      setForm(f => ({ ...f, _pending_before: file }));
+    } else {
+      setPreviewAfter(URL.createObjectURL(file));
+      setForm(f => ({ ...f, _pending_after: file }));
+    }
+  };
+
   const handleSubmit = async () => {
     if (!form.wo_title || !form.actual_priority) { setErr("Title and Priority are required."); return; }
     setSaving(true); setErr(null);
     try {
+      const { _pending_before, _pending_after, schedFreq, schedDays, schedEvery, ...formToSave } = form;
+
       const payload: Partial<WOListItem> = {
-        wo_title: form.wo_title, wo_type: form.wo_type || undefined, wo_sub_type: form.wo_sub_type || undefined,
+        ...formToSave,
+        wo_number: editName ? undefined : `WO-${Date.now()}`,
+        wo_type: form.wo_type || undefined, wo_sub_type: form.wo_sub_type || undefined,
         wo_source: form.wo_source || undefined, client_code: form.client_code || undefined,
-        contract_code: form.contract_code || undefined, property_code: form.property_code || undefined,
+        contract_code: form.contract_code || undefined, branch_code: form.branch_code || undefined,
+        property_code: form.property_code || undefined,
         zone_code: form.zone_code || undefined, sub_zone_code: form.sub_zone_code || undefined,
         base_unit_code: form.base_unit_code || undefined, asset_code: form.asset_code || undefined,
         service_group: form.service_group || undefined, fault_category: form.fault_category || undefined,
@@ -1175,23 +1536,157 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
         work_done_notes: form.description || undefined, status: form.status || "Open",
         sr_number: form.sr_number || undefined,
       };
+
+      if (!form._pending_before && !previewBefore) payload.before_photo = "";
+      if (!form._pending_after && !previewAfter) payload.after_photo = "";
+
       const doc = editName ? await frappeUpdate<WOListItem>("Work Orders", editName, payload) : await frappeCreate<WOListItem>("Work Orders", payload);
+
+      // 🎉 Impressive toast notification for work order creation/update
+      if (editName) {
+        // Work Order Updated - Show impressive success animation
+        sonnerToast.success(
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <div className="w-10 h-10 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center border border-white/20">
+                <RotateCcw className="w-5 h-5 text-white" />
+              </div>
+              <div className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-emerald-400 rounded-full animate-pulse border-2 border-white" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="font-semibold text-sm text-white leading-tight">Work Order Updated</span>
+              <span className="text-xs text-white/80 leading-tight">#{doc.wo_number || doc.name} • Updated successfully</span>
+            </div>
+          </div>,
+          {
+            duration: 4000,
+            position: 'top-right',
+            icon: null,
+            style: {
+              background: 'linear-gradient(135deg, #1e40af 0%, #3730a3 100%)',
+              color: 'white',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '16px',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+              padding: '20px',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+            },
+            className: 'animate-slide-in-right',
+          }
+        );
+      } else {
+        // Work Order Created - Show spectacular celebration animation
+        sonnerToast.success(
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <div className="w-12 h-12 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center border border-white/20">
+                <Trophy className="w-6 h-6 text-white" />
+              </div>
+              <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full animate-pulse border-2 border-white" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="font-semibold text-base text-white leading-tight">Work Order Created</span>
+              <span className="text-sm text-white/80 leading-tight">#{doc.wo_number || doc.name} • Ready for action</span>
+            </div>
+          </div>,
+          {
+            duration: 5000,
+            position: 'top-right',
+            icon: null,
+            style: {
+              background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+              color: 'white',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '16px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+              padding: '24px',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+            },
+            className: 'animate-bounce-in',
+          }
+        );
+      }
+
+      if (form._pending_before) {
+        setUploading(true);
+        const uploadFormData = new FormData();
+        uploadFormData.append('file', form._pending_before, form._pending_before.name);
+        uploadFormData.append('is_private', '0');
+        uploadFormData.append('folder', 'Home/Attachments');
+        uploadFormData.append('doctype', 'Work Orders');
+        uploadFormData.append('docname', doc.name);
+        uploadFormData.append('fieldname', 'before_photo');
+
+        const uploadRes = await fetch('/api/method/upload_file', {
+          method: 'POST', body: uploadFormData, credentials: 'include',
+          headers: { 'X-Frappe-CSRF-Token': csrf() }
+        });
+
+        if (uploadRes.ok) {
+          const upJson = await uploadRes.json();
+          const msg = upJson.message;
+          const newUrl = msg && typeof msg === 'object' ? (msg.file_url ?? msg.file_name ?? null) : typeof msg === 'string' ? msg : null;
+          if (newUrl) {
+            try { await frappeUpdate('Work Orders', doc.name, { before_photo: newUrl }); } catch (err) { }
+          }
+        } else {
+          throw new Error('Image upload failed');
+        }
+        setUploading(false);
+      }
+
+      if (form._pending_after) {
+        setUploading(true);
+        const uploadFormData = new FormData();
+        uploadFormData.append('file', form._pending_after, form._pending_after.name);
+        uploadFormData.append('is_private', '0');
+        uploadFormData.append('folder', 'Home/Attachments');
+        uploadFormData.append('doctype', 'Work Orders');
+        uploadFormData.append('docname', doc.name);
+        uploadFormData.append('fieldname', 'after_photo');
+
+        const uploadRes = await fetch('/api/method/upload_file', {
+          method: 'POST', body: uploadFormData, credentials: 'include',
+          headers: { 'X-Frappe-CSRF-Token': csrf() }
+        });
+
+        if (uploadRes.ok) {
+          const upJson = await uploadRes.json();
+          const msg = upJson.message;
+          const newUrl = msg && typeof msg === 'object' ? (msg.file_url ?? msg.file_name ?? null) : typeof msg === 'string' ? msg : null;
+          if (newUrl) {
+            try { await frappeUpdate('Work Orders', doc.name, { after_photo: newUrl }); } catch (err) { }
+          }
+        } else {
+          throw new Error('Image upload failed');
+        }
+        setUploading(false);
+      }
+
       onSaved(doc.name);
     } catch (e: unknown) { setErr((e as Error).message); }
-    finally { setSaving(false); }
+    finally { setSaving(false); setUploading(false); }
   };
 
   const Inp = ({ label, fk, type = "text", placeholder, req }: { label: string; fk: keyof WOForm; type?: string; placeholder?: string; req?: boolean }) => (
     <div className="mb-4">
-      <label className="block text-sm font-semibold text-foreground mb-1.5">{label}{req && <span className="text-destructive ml-1">*</span>}</label>
-      <input type={type} value={String(form[fk])} onChange={e => set(fk)(e.target.value)} placeholder={placeholder}
-        className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
+      <label className="block text-xs font-semibold text-foreground mb-1.5">{label}{req && <span className="text-destructive ml-1">*</span>}</label>
+      <input
+        key={`inp-${fk}`}
+        type={type}
+        defaultValue={String(form[fk])}
+        onBlur={e => set(fk)(e.target.value)}
+        placeholder={placeholder}
+        className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+      />
     </div>
   );
-  const Sel = ({ label, fk, opts, req, disabled }: { label: string; fk: keyof WOForm; opts: { v: string; l: string }[]; req?: boolean; disabled?: boolean }) => (
+  const Sel = ({ label, fk, opts, req, disabled, onChangeOverride }: { label: string; fk: keyof WOForm; opts: { v: string; l: string }[]; req?: boolean; disabled?: boolean; onChangeOverride?: (v: string) => void }) => (
     <div className="mb-4">
-      <label className="block text-sm font-semibold text-foreground mb-1.5">{label}{req && <span className="text-destructive ml-1">*</span>}</label>
-      <select value={String(form[fk])} onChange={e => set(fk)(e.target.value)} disabled={disabled}
+      <label className="block text-xs font-semibold text-foreground mb-1.5">{label}{req && <span className="text-destructive ml-1">*</span>}</label>
+      <select value={String(form[fk])} onChange={e => onChangeOverride ? onChangeOverride(e.target.value) : set(fk)(e.target.value)} disabled={disabled}
         className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50">
         <option value="">Select…</option>
         {opts.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
@@ -1199,125 +1694,250 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
     </div>
   );
 
+  const STEPS = ["Details", "Location & Asset", "Schedule", "Photos"];
+
   return (
-    <div className="max-w-2xl mx-auto py-6 px-6 fade-in">
-      <div className="flex items-center gap-2 mb-6">
-        {editName && <button onClick={onClose} className="p-1 hover:bg-muted rounded"><ChevronLeft className="w-5 h-5" /></button>}
-        <h2 className="text-xl font-bold text-foreground flex-1">{editName ? "Edit work order" : "New Work Order"}</h2>
-        {!editName && <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="w-5 h-5" /></button>}
+    <div className="max-w-2xl mx-auto py-4 px-6 fade-in">
+      {/* Step indicator */}
+      <div className="flex items-center gap-0 mb-8 rounded-xl overflow-hidden border border-border shadow-sm">
+        {STEPS.map((s, i) => (
+          <button key={s} onClick={() => setStep(i)}
+            className={`flex-1 py-2.5 text-xs font-bold text-center transition-all border-r border-border last:border-r-0
+              ${step === i ? "bg-primary text-primary-foreground" : step > i ? "bg-primary/10 text-primary" : "bg-muted/30 text-muted-foreground hover:bg-muted"}`}>
+            <span className="mr-1.5 opacity-60">{i + 1}</span>{s}
+          </button>
+        ))}
       </div>
+
       {err && <ErrBanner msg={err} onRetry={() => setErr(null)} />}
-      <div className="mb-5">
-        <input value={form.wo_title} onChange={e => set("wo_title")(e.target.value)} placeholder="Work order title…"
-          className="w-full px-0 py-2 border-0 border-b-2 border-primary text-lg font-semibold bg-transparent focus:outline-none text-foreground placeholder:text-muted-foreground/50" />
-      </div>
-      <div className="mb-5">
-        <div className="border-2 border-dashed border-border rounded-xl py-10 flex flex-col items-center gap-2 text-muted-foreground hover:border-primary/40 transition-colors cursor-pointer bg-muted/10">
-          <Camera className="w-6 h-6" /><span className="text-sm">Add or drag pictures</span>
-        </div>
-      </div>
-      <div className="mb-5">
-        <label className="block text-sm font-semibold text-foreground mb-1.5">Description</label>
-        <textarea value={form.description} onChange={e => set("description")(e.target.value)} rows={3} placeholder="Add a description"
-          className="w-full px-3 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-none" />
-      </div>
-      <div className="mb-5">
-        <label className="block text-sm font-semibold text-foreground mb-2">Procedure</label>
-        <div className="border border-border rounded-xl p-5 flex flex-col items-center gap-3 text-muted-foreground bg-muted/20">
-          <p className="text-sm flex items-center gap-2"><FileText className="w-4 h-4" /> Create or attach new Form, Procedure or Checklist</p>
-          <button className="px-4 py-2 border border-primary text-primary rounded-lg text-sm font-semibold hover:bg-primary/5 transition-colors">+ Add Procedure</button>
-        </div>
-      </div>
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3">WO Classification</p>
-      <div className="grid grid-cols-2 gap-3">
-        <Sel label="WO Type" fk="wo_type" opts={["Reactive Maintenance","Planned Preventive","Project","Inspection","Callout"].map(v => ({ v, l: v }))} req />
-        <Sel label="WO Sub Type" fk="wo_sub_type" opts={["Reactive Maintenance","Planned Preventive","Scheduled","Emergency","AdHoc"].map(v => ({ v, l: v }))} />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Sel label="WO Source" fk="wo_source" opts={["Service Request","PM Schedule","Project","Helpdesk","Portal","Phone","Inspection","Manual"].map(v => ({ v, l: v }))} />
-        <Inp label="Service Request #" fk="sr_number" placeholder="SR-00001" />
-      </div>
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3 mt-1">Assign to</p>
-      <div className="grid grid-cols-2 gap-3">
-        <Sel label="Primary Technician" fk="assigned_to" opts={technicians.map(t => ({ v: t.name, l: t.resource_name }))} req />
-        <Sel label="Secondary Technician" fk="secondary_tech" opts={technicians.map(t => ({ v: t.name, l: t.resource_name }))} />
-      </div>
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3 mt-1">Client & Contract</p>
-      <div className="grid grid-cols-2 gap-3">
-        <Sel label="Client" fk="client_code" opts={clients.map(c => ({ v: c.name, l: c.client_name }))} req />
-        <Sel label="Contract" fk="contract_code" opts={contracts.map(c => ({ v: c.name, l: c.contract_title }))} disabled={!form.client_code} />
-      </div>
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3 mt-1">Location</p>
-      <Sel label="Property" fk="property_code" req opts={properties.map(p => ({ v: p.name, l: `${p.property_code} — ${p.property_name}` }))} />
-      <div className="grid grid-cols-2 gap-3">
-        <Sel label="Zone" fk="zone_code" opts={zones.map(z => ({ v: z.name, l: `${z.zone_code} — ${z.zone_name}` }))} disabled={!form.property_code} />
-        <Sel label="Sub Zone" fk="sub_zone_code" opts={subZones.map(s => ({ v: s.name, l: `${s.sub_zone_code} — ${s.sub_zone_name}` }))} disabled={!form.zone_code} />
-      </div>
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3 mt-1">Asset & Fault</p>
-      <Sel label="Asset" fk="asset_code" opts={assets.map(a => ({ v: a.name, l: `${a.asset_code} — ${a.asset_name}` }))} disabled={!form.property_code} />
-      <div className="grid grid-cols-2 gap-3">
-        <Inp label="Service Group" fk="service_group" placeholder="MEP, Civil…" />
-        <Inp label="Fault Category" fk="fault_category" placeholder="HVAC, Plumbing…" />
-      </div>
-      <Sel label="Fault Code" fk="fault_code" opts={faultCodes.map(f => ({ v: f.name, l: f.name }))} />
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3 mt-1">Due Date</p>
-      <div className="grid grid-cols-2 gap-3">
-        <Inp label="Scheduled Start Date" fk="schedule_start_date" type="date" />
-        <Inp label="Start Time" fk="schedule_start_time" type="time" />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Inp label="End Time" fk="schedule_end_time" type="time" />
-        <Inp label="Planned Duration (min)" fk="planned_duration_min" type="number" placeholder="120" />
-      </div>
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3 mt-1">Schedule</p>
-      <div className="mb-4">
-        <div className="flex gap-2 mb-3">
-          {SCHEDULE_FREQS.map(f => (
-            <button key={f} onClick={() => set("schedFreq")(f)}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold border-2 transition-all ${form.schedFreq === f ? "border-primary bg-primary text-primary-foreground" : "border-border text-foreground hover:border-primary/40"}`}>
-              {f}
-            </button>
-          ))}
-        </div>
-        {form.schedFreq === "Weekly" && (
-          <div className="fade-in">
-            <p className="text-sm text-foreground mb-2">
-              Every <input type="number" value={form.schedEvery} onChange={e => set("schedEvery")(e.target.value)} className="w-12 border border-border rounded px-1 py-0.5 text-sm text-center mx-1" /> week on
-            </p>
-            <div className="flex gap-2 mb-2">
-              {DAYS.map((d, i) => (
-                <button key={d} onClick={() => toggleDay(i)}
-                  className={`w-10 h-10 rounded-full text-xs font-bold border-2 transition-all ${(form.schedDays as number[]).includes(i) ? "border-primary bg-primary text-primary-foreground" : "border-border text-foreground hover:border-primary/40"}`}>
-                  {d}
-                </button>
-              ))}
-            </div>
-            {(form.schedDays as number[]).length > 0 && (
-              <p className="text-xs text-muted-foreground">Repeats every {form.schedEvery} week on {(form.schedDays as number[]).map(d => DAYS[d]).join(", ")} after completion.</p>
-            )}
+
+      {/* Step 0 - Details */}
+      {step === 0 && (
+        <div className="fade-in space-y-5">
+          <div>
+            <label className="block text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-2 px-1">Work Order Title</label>
+            <input value={form.wo_title} onChange={e => set("wo_title")(e.target.value)} placeholder="e.g. Repair leaking pipe in Kitchen..."
+              className="w-full px-4 py-3 border border-border rounded-xl text-lg font-semibold bg-background focus:outline-none focus:ring-2 focus:ring-primary/20 text-foreground placeholder:text-muted-foreground/40" />
           </div>
+          <div className="mb-4">
+            <label className="block text-xs font-semibold text-foreground mb-1.5">Description / Issue Notes</label>
+            <textarea value={form.description} onChange={e => set("description")(e.target.value)} rows={4} placeholder="Add detailed instructions or issues..."
+              className="w-full px-4 py-3 border border-border rounded-xl text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none" />
+          </div>
+          <div className="pt-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Classification</p>
+            <div className="grid grid-cols-2 gap-4">
+              <Sel label="WO Type" fk="wo_type" opts={["Reactive Maintenance", "Planned Preventive", "Project", "Inspection", "Callout"].map(v => ({ v, l: v }))} req />
+              <Sel label="WO Sub Type" fk="wo_sub_type" opts={["Reactive Maintenance", "Planned Preventive", "Scheduled", "Emergency", "AdHoc"].map(v => ({ v, l: v }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Sel label="WO Source" fk="wo_source" opts={["Service Request", "PM Schedule", "Project", "Helpdesk", "Portal", "Phone", "Inspection", "Manual"].map(v => ({ v, l: v }))} />
+              <Sel
+                label="Service Request #"
+                fk="sr_number"
+                opts={serviceRequests.map(sr => ({ v: sr.sr_number || sr.name, l: `${sr.sr_number || sr.name} - ${sr.sr_title || ''}` }))}
+              />
+            </div>
+          </div>
+          <div className="pt-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Priority</p>
+            <div className="flex gap-2">
+              {["", "P4 - Low", "P3 - Medium", "P2 - High", "P1 - Critical"].map(p => {
+                const label = p ? PRIORITY_CFG[p]?.label : "None"; const active = form.actual_priority === p;
+                return (
+                  <button key={p || "none"} type="button" onClick={() => set("actual_priority")(p)}
+                    className={`flex-1 py-2 rounded-xl text-[11px] font-bold border-2 transition-all ${active ? "border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20" : "border-border text-foreground hover:border-primary/40 bg-card"}`}>
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 1 - Location & Asset */}
+      {step === 1 && (
+        <div className="fade-in space-y-6">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Client & Location</p>
+            <div className="grid grid-cols-2 gap-4">
+              <Sel label="Client" fk="client_code" opts={clients.map(c => ({ v: c.name, l: c.client_name }))} req />
+              <Sel label="Contract" fk="contract_code" opts={contracts.map(c => ({ v: c.name, l: c.contract_title }))} disabled={!form.client_code} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Sel label="Branch" fk="branch_code" opts={branches.map(b => ({ v: b.name, l: `${b.branch_code} — ${b.branch_name}` }))} onChangeOverride={handleBranchChange} />
+              <Sel label="Property" fk="property_code" opts={properties.map(p => ({ v: p.name, l: `${p.property_code} — ${p.property_name}` }))} req onChangeOverride={handlePropertyChange} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Sel label="Zone" fk="zone_code" opts={zones.map(z => ({ v: z.name, l: `${z.zone_code} — ${z.zone_name}` }))} disabled={!form.property_code} onChangeOverride={handleZoneChange} />
+              <Sel label="Sub Zone" fk="sub_zone_code" opts={subZones.map(s => ({ v: s.name, l: `${s.sub_zone_code} — ${s.sub_zone_name}` }))} disabled={!form.zone_code} onChangeOverride={handleSubZoneChange} />
+            </div>
+            <Sel label="Base Unit" fk="base_unit_code" opts={baseUnits.map(bu => ({ v: bu.name, l: `${bu.base_unit_code} — ${bu.base_unit_name}` }))} disabled={!form.sub_zone_code} />
+          </div>
+          <div className="pt-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Asset & System</p>
+            <Sel label="Asset" fk="asset_code" opts={assets.map(a => ({ v: a.name, l: `${a.asset_code} — ${a.asset_name}` }))} disabled={!form.property_code} />
+            <div className="grid grid-cols-2 gap-4">
+              <Inp label="Service Group" fk="service_group" placeholder="e.g. MEP, Civil, IT" />
+              <Inp label="Fault Category" fk="fault_category" placeholder="e.g. HVAC, Plumbing" />
+            </div>
+            <Sel label="Fault Code" fk="fault_code" opts={faultCodes.map(f => ({ v: f.name, l: f.name }))} />
+          </div>
+        </div>
+      )}
+
+      {/* Step 2 - Schedule & Assignment */}
+      {step === 2 && (
+        <div className="fade-in space-y-6">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Timeline</p>
+            <div className="grid grid-cols-2 gap-4">
+              <Inp label="Scheduled Start Date" fk="schedule_start_date" type="date" />
+              <Inp label="Start Time" fk="schedule_start_time" type="time" />
+            </div>
+            <div className="grid grid-cols-2 gap-4 mb-2">
+              <Inp label="End Time" fk="schedule_end_time" type="time" />
+              <Inp label="Planned Duration (min)" fk="planned_duration_min" type="number" placeholder="120" />
+            </div>
+            <div className="mt-4 p-4 bg-muted/30 rounded-2xl border border-border">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3">Recurring Schedule</p>
+              <div className="flex gap-2 mb-4">
+                {SCHEDULE_FREQS.map(f => (
+                  <button key={f} type="button" onClick={() => set("schedFreq")(f)}
+                    className={`flex-1 py-2 rounded-xl text-[10px] font-bold border-2 transition-all ${form.schedFreq === f ? "border-primary bg-primary text-primary-foreground shadow-sm shadow-primary/20" : "border-border text-foreground hover:border-primary/40 bg-background"}`}>
+                    {f}
+                  </button>
+                ))}
+              </div>
+              {form.schedFreq === "Weekly" && (
+                <div className="fade-in mt-3 animate-in fade-in slide-in-from-top-1">
+                  <p className="text-xs text-foreground mb-3 font-medium">
+                    Repeat every <input type="number" value={form.schedEvery} onChange={e => set("schedEvery")(e.target.value)} className="w-12 border border-border rounded-lg px-2 py-1 text-sm text-center mx-1 bg-background focus:outline-none focus:ring-2 focus:ring-primary/20" /> week(s) on:
+                  </p>
+                  <div className="flex justify-between gap-1">
+                    {DAYS.map((d, i) => (
+                      <button key={d} type="button" onClick={() => toggleDay(i)}
+                        className={`w-9 h-9 rounded-full text-[10px] font-bold border-2 transition-all ${(form.schedDays as number[]).includes(i) ? "border-primary bg-primary text-primary-foreground shadow-sm" : "border-border text-foreground hover:border-primary/40 bg-background"}`}>
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {form.schedFreq === "Monthly" && <p className="text-[11px] text-muted-foreground mt-2 italic">Repeats every 1 month on the same day.</p>}
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Assignment & Status</p>
+            <div className="grid grid-cols-2 gap-4">
+              <Sel label="Primary Technician" fk="assigned_to" opts={technicians.map(t => ({ v: t.name, l: t.resource_name }))} req />
+              <Sel label="Secondary Technician" fk="secondary_tech" opts={technicians.map(t => ({ v: t.name, l: t.resource_name }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Sel label="Work Order Status" fk="status" opts={["Draft", "Open", "Assigned", "In Progress", "Pending Parts", "Not Dispatched", "Pending Approval", "Completed", "Closed", "Cancelled"].map(v => ({ v, l: v }))} />
+              <Sel label="Approval Criticality" fk="approval_criticality" opts={["Normal", "High", "Critical", "Emergency"].map(v => ({ v, l: v }))} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3 - Photos */}
+      {step === 3 && (
+        <div className="fade-in space-y-6">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Photo Evidence</p>
+          <div className="grid grid-cols-2 gap-6">
+
+            {/* Before Photo */}
+            <div className="space-y-2">
+              <label className="flex items-center justify-between px-1">
+                <span className="text-xs font-bold text-foreground">Before Work</span>
+                {previewBefore && <button onClick={() => { setPreviewBefore(null); setForm(f => ({ ...f, _pending_before: undefined })) }} className="text-[10px] font-bold text-destructive hover:underline uppercase tracking-tighter">Remove</button>}
+              </label>
+              <div className="relative group">
+                <input
+                  type="file" accept="image/*" onChange={handleImageUpload("before")} disabled={uploading}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 disabled:cursor-not-allowed"
+                />
+                <div className={`border-2 rounded-2xl h-48 flex flex-col items-center justify-center gap-3 transition-all
+                  ${previewBefore ? 'border-primary/20 bg-primary/5 shadow-inner' : 'border-dashed border-border text-muted-foreground bg-muted/20 group-hover:bg-muted/40 group-hover:border-primary/30'}
+                  ${uploading ? 'opacity-50' : ''}`}>
+                  {uploading ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Uploading...</span>
+                    </div>
+                  ) : previewBefore ? (
+                    <img src={previewBefore.startsWith('http') || previewBefore.startsWith('blob:') ? previewBefore : `http://facility.quantcloud.in${previewBefore}`} className="w-full h-full object-cover rounded-xl" alt="Before" />
+                  ) : (
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="p-3 rounded-full bg-background shadow-sm"><Camera className="w-6 h-6 text-primary" /></div>
+                      <span className="text-xs font-bold text-foreground">Add or drag pictures</span>
+                      <span className="text-[10px] text-muted-foreground">Click to upload before photo</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* After Photo */}
+            <div className="space-y-2">
+              <label className="flex items-center justify-between px-1">
+                <span className="text-xs font-bold text-foreground">After Work</span>
+                {previewAfter && <button onClick={() => { setPreviewAfter(null); setForm(f => ({ ...f, _pending_after: undefined })) }} className="text-[10px] font-bold text-destructive hover:underline uppercase tracking-tighter">Remove</button>}
+              </label>
+              <div className="relative group">
+                <input
+                  type="file" accept="image/*" onChange={handleImageUpload("after")} disabled={uploading}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 disabled:cursor-not-allowed"
+                />
+                <div className={`border-2 rounded-2xl h-48 flex flex-col items-center justify-center gap-3 transition-all
+                  ${previewAfter ? 'border-primary/20 bg-primary/5 shadow-inner' : 'border-dashed border-border text-muted-foreground bg-muted/20 group-hover:bg-muted/40 group-hover:border-primary/30'}
+                  ${uploading ? 'opacity-50' : ''}`}>
+                  {uploading ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Uploading...</span>
+                    </div>
+                  ) : previewAfter ? (
+                    <img src={previewAfter.startsWith('http') || previewAfter.startsWith('blob:') ? previewAfter : `http://facility.quantcloud.in${previewAfter}`} className="w-full h-full object-cover rounded-xl" alt="After" />
+                  ) : (
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="p-3 rounded-full bg-background shadow-sm"><CheckCircle2 className="w-6 h-6 text-emerald-500" /></div>
+                      <span className="text-xs font-bold text-foreground">Add or drag pictures</span>
+                      <span className="text-[10px] text-muted-foreground">Click to upload after photo</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Navigation */}
+      <div className="flex items-center gap-3 mt-6 pt-4 border-t border-border">
+        {step > 0 && (
+          <button onClick={() => setStep(step - 1)}
+            className="flex items-center gap-1.5 px-4 py-2.5 border border-border rounded-xl text-sm font-semibold hover:bg-muted transition-colors">
+            <ChevronLeft className="w-4 h-4" /> Back
+          </button>
         )}
-        {form.schedFreq === "Monthly" && <p className="text-xs text-muted-foreground fade-in">Repeats every 1 month on the scheduled day.</p>}
+        {step < STEPS.length - 1 ? (
+          <button onClick={() => setStep(step + 1)}
+            className="flex-1 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-bold hover:bg-primary/90 transition-all flex items-center justify-center gap-2">
+            Next: {STEPS[step + 1]} <ChevronRight className="w-4 h-4" />
+          </button>
+        ) : (
+          <button onClick={handleSubmit} disabled={saving || uploading}
+            className="flex-1 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-bold hover:bg-primary/90 transition-all flex items-center justify-center gap-2 disabled:opacity-60">
+            {(saving || uploading) ? <><Loader2 className="w-4 h-4 animate-spin" /> {uploading ? 'Uploading...' : 'Saving...'} </> : editName ? "Update Work Order" : <><Plus className="w-4 h-4" /> Create Work Order</>}
+          </button>
+        )}
       </div>
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3 mt-1">Priority <span className="text-destructive">*</span></p>
-      <div className="flex gap-2 mb-4">
-        {["", "P4 - Low", "P3 - Medium", "P2 - High", "P1 - Critical"].map(p => {
-          const label = p ? PRIORITY_CFG[p]?.label : "None"; const active = form.actual_priority === p;
-          return (
-            <button key={p || "none"} onClick={() => set("actual_priority")(p)}
-              className={`flex-1 py-2 rounded-lg text-xs font-semibold border-2 transition-all ${active ? "border-primary bg-primary text-primary-foreground" : "border-border text-foreground hover:border-primary/40"}`}>
-              {label}
-            </button>
-          );
-        })}
-      </div>
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3 mt-1">Status</p>
-      <Sel label="" fk="status" opts={["Draft","Open","Assigned","In Progress","Pending Parts","Not Dispatched","Pending Approval","Completed","Closed","Cancelled"].map(v => ({ v, l: v }))} />
-      <Sel label="Approval Criticality" fk="approval_criticality" opts={["Normal","High","Critical","Emergency"].map(v => ({ v, l: v }))} />
-      <button onClick={handleSubmit} disabled={saving}
-        className="w-full py-3 bg-primary text-primary-foreground rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-60 mt-4">
-        {saving ? <><Loader2 className="w-4 h-4 animate-spin" />Saving…</> : editName ? "Update" : <><Plus className="w-4 h-4" />Create Work Order</>}
-      </button>
+
     </div>
   );
 }
@@ -1325,42 +1945,111 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
 /* ═══════════════════════════════════════════════════════
    MAIN PAGE COMPONENT
 ═══════════════════════════════════════════════════════ */
-type ListTab = "To Do" | "Done";
+type ListTab = "All" | "To Do" | "Done";
 type SortKey = "Priority: Highest First" | "Creation Date: Newest First" | "Due Date: Soonest First";
 
 const TODO_STATUSES = ["Draft", "Open", "Assigned", "In Progress", "Pending Parts", "Not Dispatched", "Pending Approval"];
 const DONE_STATUSES = ["Completed", "Closed", "Cancelled"];
 
 export default function WorkOrders() {
-  const [tab, setTab] = useState<ListTab>("To Do");
+  const navigate = useNavigate();
+  const [tab, setTab] = useState<ListTab>("All");
   const [sort, setSort] = useState<SortKey>("Priority: Highest First");
   const [showSort, setShowSort] = useState(false);
+
+  const handleSRClick = (srNumber: string) => {
+    // Navigate to Requests page with the specific service request
+    navigate(`/requests?request=${encodeURIComponent(srNumber)}`);
+  };
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [showForm, setShowForm] = useState(false);
   const [editName, setEditName] = useState<string | undefined>(undefined);
   const [search, setSearch] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const sortRef = useRef<HTMLDivElement>(null);
+  const [activeFilterKey, setActiveFilterKey] = useState<string | null>(null);
+  const filterRef = useRef<HTMLDivElement>(null);
+  const [filterBranch, setFilterBranch] = useState("");
+  const [filterAssignedTo, setFilterAssignedTo] = useState("");
+  const [filterDueDate, setFilterDueDate] = useState("");
+  const [filterLocation, setFilterLocation] = useState("");
+  const [filterPriority, setFilterPriority] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
 
-  const statusFilter: FF = [["status", "in", (tab === "To Do" ? TODO_STATUSES : DONE_STATUSES).join(",")]];
+
+
+
+
+
+
+  /* close dropdown on outside click */
+  useEffect(() => {
+    if (!activeFilterKey) return;
+    const h = (e: MouseEvent) => {
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setActiveFilterKey(null);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [activeFilterKey]);
+
+  const statusFilter: FF = [
+    [
+      "status",
+      "in",
+      (
+        tab === "To Do"
+          ? TODO_STATUSES
+          : tab === "Done"
+            ? DONE_STATUSES
+            : [...TODO_STATUSES, ...DONE_STATUSES]
+      ).join(","),
+    ],
+  ];
 
   const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
     "Work Orders",
-    ["name","wo_number","wo_title","wo_type","wo_sub_type","wo_source","status",
-      "actual_priority","default_priority","client_code","client_name",
-      "property_code","property_name","asset_code","asset_name",
-      "assigned_to","assigned_technician","secondary_tech","secondary_technician_name",
-      "schedule_start_date","schedule_start_time","planned_duration_min",
-      "labor_hours","spares_amount","service_amount","total_wo_cost",
-      "response_sla_breach","resolution_sla_breach","sr_number","creation","modified"],
+    ["name", "wo_number", "wo_title", "wo_type", "wo_sub_type", "wo_source", "status",
+      "actual_priority", "default_priority", "client_code", "client_name",
+      "branch_code", "branch_name", "property_code", "property_name", 
+      "zone_code", "sub_zone_code", "base_unit_code", "location_full_path",
+      "asset_code", "asset_name",
+      "assigned_to", "assigned_technician", "secondary_tech", "secondary_technician_name",
+      "schedule_start_date", "schedule_start_time", "planned_duration_min",
+      "labor_hours", "spares_amount", "service_amount", "total_wo_cost",
+      "response_sla_breach", "resolution_sla_breach", "sr_number", "creation", "modified",
+      "initiator_type", "requested_by"],
     statusFilter, [tab]
   );
 
+  /* ── derive unique filter options from live data ── */
+  const allBranches = useMemo(() => Array.from(new Set(allWOs.map((wo) => wo.branch_name || wo.branch_code).filter(Boolean))) as string[], [allWOs]);
+  const allAssignedTo = useMemo(() => Array.from(new Set(allWOs.map((wo) => wo.assigned_technician || wo.assigned_to).filter(Boolean))) as string[], [allWOs]);
+  const allLocations = useMemo(() => Array.from(new Set(allWOs.map((wo) => wo.property_name || wo.property_code).filter(Boolean))) as string[], [allWOs]);
+  const allPriorities = useMemo(() => Array.from(new Set(allWOs.map((wo) => wo.actual_priority).filter(Boolean))) as string[], [allWOs]);
+  const allStatuses = useMemo(() => Array.from(new Set(allWOs.map((wo) => wo.status).filter(Boolean))) as string[], [allWOs]);
+
+  const activeFiltersCount = [filterBranch, filterAssignedTo, filterDueDate, filterLocation, filterPriority, filterStatus].filter(Boolean).length;
+
+  const clearAllFilters = () => {
+    setFilterBranch(""); setFilterAssignedTo(""); setFilterDueDate(""); setFilterLocation("");
+    setFilterPriority(""); setFilterStatus(""); setActiveFilterKey(null);
+  };
+
   const filtered = allWOs.filter(wo => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return wo.wo_title?.toLowerCase().includes(q) || wo.wo_number?.toLowerCase().includes(q) ||
-      wo.property_name?.toLowerCase().includes(q) || wo.assigned_technician?.toLowerCase().includes(q);
+    if (search) {
+      const q = search.toLowerCase();
+      const matchSearch = wo.wo_title?.toLowerCase().includes(q) || wo.wo_number?.toLowerCase().includes(q) ||
+        wo.property_name?.toLowerCase().includes(q) || wo.assigned_technician?.toLowerCase().includes(q);
+      if (!matchSearch) return false;
+    }
+    if (filterBranch && (wo.branch_name || wo.branch_code) !== filterBranch) return false;
+    if (filterAssignedTo && (wo.assigned_technician || wo.assigned_to) !== filterAssignedTo) return false;
+    if (filterDueDate && wo.schedule_start_date !== filterDueDate) return false;
+    if (filterLocation && (wo.property_name || wo.property_code) !== filterLocation) return false;
+    if (filterPriority && wo.actual_priority !== filterPriority) return false;
+    if (filterStatus && wo.status !== filterStatus) return false;
+    return true;
   });
 
   const PRIO_ORDER: Record<string, number> = { "P1 - Critical": 0, "P2 - High": 1, "P3 - Medium": 2, "P4 - Low": 3, "": 4 };
@@ -1392,14 +2081,10 @@ export default function WorkOrders() {
     return () => document.removeEventListener("mousedown", h);
   }, [showSort]);
 
-  const FILTER_CHIPS = [
-    { icon: <Filter className="w-3.5 h-3.5" />, label: "Filters" },
-    { icon: <User className="w-3.5 h-3.5" />, label: "Assigned To" },
-    { icon: <Clock className="w-3.5 h-3.5" />, label: "Due Date" },
-    { icon: <MapPin className="w-3.5 h-3.5" />, label: "Location" },
-    { icon: <Zap className="w-3.5 h-3.5" />, label: "Priority" },
-    { icon: <CheckCircle2 className="w-3.5 h-3.5" />, label: "Status" },
-  ];
+
+
+
+
 
   return (
     <div className="flex flex-col h-full">
@@ -1407,11 +2092,11 @@ export default function WorkOrders() {
       <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-card">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-foreground">Work Orders</h1>
-          <div className="flex items-center gap-1 ml-1">
+          {/* <div className="flex items-center gap-1 ml-1">
             {["⊞", "⊟", "▦"].map(ic => (
               <button key={ic} className="w-7 h-7 rounded hover:bg-muted flex items-center justify-center text-muted-foreground text-lg">{ic}</button>
             ))}
-          </div>
+          </div> */}
         </div>
         <div className="flex items-center gap-3">
           <button onClick={refetch} className="p-2 rounded-lg hover:bg-muted">
@@ -1430,16 +2115,325 @@ export default function WorkOrders() {
         </div>
       </div>
 
-      {/* FILTER BAR */}
-      <div className="flex items-center justify-between px-5 py-2 border-b border-border bg-card">
-        <div className="flex items-center gap-2 flex-wrap">
-          {FILTER_CHIPS.map(({ icon, label }) => (
-            <button key={label} className="filter-chip">{icon} {label}</button>
-          ))}
+      {/* ══ DYNAMIC FILTER BAR ══ */}
+      <div className="flex items-center gap-2 px-5 py-2 border-b border-border bg-card flex-wrap relative z-40" ref={filterRef}>
+        {/* Filter label */}
+        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold select-none
+          ${activeFiltersCount > 0 ? "border-primary bg-primary/8 text-primary" : "border-border text-muted-foreground bg-muted/30"}`}>
+          <Filter className="w-3.5 h-3.5" /> Filters
+          {activeFiltersCount > 0 && (
+            <span className="ml-1 w-4 h-4 rounded-full bg-primary text-primary-foreground text-[9px] font-bold flex items-center justify-center">
+              {activeFiltersCount}
+            </span>
+          )}
         </div>
-        <button className="flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline">
-          <Star className="w-3.5 h-3.5" /> My Filters
-        </button>
+
+        {/* ─── Assigned To filter ─── */}
+        {(() => {
+          const key = "assigned_to";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterAssignedTo;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <User className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span className="max-w-[120px] truncate">{filterAssignedTo}</span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterAssignedTo(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5 transition-colors">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Assigned To</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[200px] max-h-52 overflow-y-auto">
+                  <button onClick={() => { setFilterAssignedTo(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Assignees
+                  </button>
+                  {allAssignedTo.map((assignee) => (
+                    <button key={assignee} onClick={() => { setFilterAssignedTo(assignee); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between ${filterAssignedTo === assignee ? "text-primary font-semibold" : "text-foreground"}`}>
+                      {assignee}
+                      {filterAssignedTo === assignee && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allAssignedTo.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ─── Branch filter ─── */}
+        {(() => {
+          const key = "branch";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterBranch;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <Building2 className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span className="max-w-[120px] truncate">{filterBranch}</span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterBranch(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5 transition-colors">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Branch</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[200px] max-h-52 overflow-y-auto">
+                  <button onClick={() => { setFilterBranch(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Branches
+                  </button>
+                  {allBranches.map((l) => (
+                    <button key={l} onClick={() => { setFilterBranch(l); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between ${filterBranch === l ? "text-primary font-semibold" : "text-foreground"}`}>
+                      {l}
+                      {filterBranch === l && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allBranches.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ─── Due Date filter ─── */}
+        {(() => {
+          const key = "due_date";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterDueDate;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span>{filterDueDate}</span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterDueDate(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Due Date</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[200px]">
+                  <div className="px-3 py-2">
+                    <input
+                      type="date"
+                      value={filterDueDate}
+                      onChange={(e) => { setFilterDueDate(e.target.value); setActiveFilterKey(null); }}
+                      className="w-full px-2 py-1 border border-border rounded text-xs"
+                      placeholder="Select due date"
+                    />
+                  </div>
+                  {filterDueDate && (
+                    <button onClick={() => { setFilterDueDate(""); setActiveFilterKey(null); }}
+                      className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors border-t border-border">
+                      Clear Date
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ─── Location filter ─── */}
+        {(() => {
+          const key = "location";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterLocation;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span className="max-w-[120px] truncate">{filterLocation}</span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterLocation(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5 transition-colors">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Location</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[200px] max-h-52 overflow-y-auto">
+                  <button onClick={() => { setFilterLocation(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Locations
+                  </button>
+                  {allLocations.map((location) => (
+                    <button key={location} onClick={() => { setFilterLocation(location); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between ${filterLocation === location ? "text-primary font-semibold" : "text-foreground"}`}>
+                      {location}
+                      {filterLocation === location && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allLocations.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ─── Priority filter ─── */}
+        {(() => {
+          const key = "priority";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterPriority;
+          const priorityColors: Record<string, string> = {
+            "P1 - Critical": "text-red-600", "P2 - High": "text-orange-600",
+            "P3 - Medium": "text-amber-600", "P4 - Low": "text-emerald-600",
+          };
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <Zap className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span>{PRIORITY_CFG[filterPriority]?.label || filterPriority}</span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterPriority(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Priority</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[160px]">
+                  <button onClick={() => { setFilterPriority(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Priorities
+                  </button>
+                  {allPriorities.map((priority) => (
+                    <button key={priority} onClick={() => { setFilterPriority(priority); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-semibold transition-colors hover:bg-muted flex items-center justify-between ${filterPriority === priority ? "bg-muted/50" : ""} ${priorityColors[priority] || "text-foreground"}`}>
+                      {PRIORITY_CFG[priority]?.label || priority}
+                      {filterPriority === priority && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allPriorities.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ─── Status filter ─── */}
+        {(() => {
+          const key = "status";
+          const isOpen = activeFilterKey === key;
+          const hasVal = !!filterStatus;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterKey(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all
+                  ${hasVal ? "border-primary bg-primary/8 text-primary" : "border-border text-foreground hover:bg-muted hover:border-primary/30"}`}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {hasVal ? (
+                  <>
+                    <span className="flex items-center gap-1">
+                      <span className={`w-1.5 h-1.5 rounded-full ${STATUS_CFG[filterStatus]?.dot || "bg-gray-400"}`} />
+                      {filterStatus}
+                    </span>
+                    <button onClick={(e) => { e.stopPropagation(); setFilterStatus(""); setActiveFilterKey(null); }}
+                      className="hover:text-destructive ml-0.5">
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </>
+                ) : (
+                  <><span>Status</span><ChevronDown className="w-3 h-3 text-muted-foreground" /></>
+                )}
+              </button>
+              {isOpen && (
+                <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-xl shadow-lg p-1 min-w-[180px]">
+                  <button onClick={() => { setFilterStatus(""); setActiveFilterKey(null); }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Statuses
+                  </button>
+                  {allStatuses.map((status) => (
+                    <button key={status} onClick={() => { setFilterStatus(status); setActiveFilterKey(null); }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between
+                        ${STATUS_CFG[status]?.text || "text-foreground"} ${filterStatus === status ? "bg-muted/50" : ""}`}>
+                      <span className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${STATUS_CFG[status]?.dot || "bg-gray-400"}`} />
+                        {status}
+                      </span>
+                      {filterStatus === status && <CheckCircle2 className="w-3 h-3 text-primary" />}
+                    </button>
+                  ))}
+                  {allStatuses.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">No data yet</p>}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* clear all */}
+        {activeFiltersCount > 0 && (
+          <button
+            onClick={clearAllFilters}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-semibold text-destructive hover:bg-destructive/10 border border-destructive/20 transition-all"
+          >
+            <X className="w-3 h-3" /> Clear all
+          </button>
+        )}
+
+        {/* results count */}
+        {activeFiltersCount > 0 && (
+          <span className="ml-auto text-xs text-muted-foreground font-medium">
+            {filtered.length}/{allWOs.length} work orders
+          </span>
+        )}
       </div>
 
       {/* BODY */}
@@ -1447,7 +2441,7 @@ export default function WorkOrders() {
         {/* LEFT LIST */}
         <div className="w-[400px] min-w-[400px] border-r border-border flex flex-col bg-card overflow-hidden">
           <div className="flex border-b border-border">
-            {(["To Do", "Done"] as ListTab[]).map(t => (
+            {(["All", "To Do", "Done"] as ListTab[]).map(t => (
               <button key={t} onClick={() => setTab(t)}
                 className={`flex-1 py-2.5 text-sm font-semibold transition-colors ${tab === t ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
                 {t}
@@ -1459,7 +2453,7 @@ export default function WorkOrders() {
               Sort By: <span className="font-semibold text-primary ml-1">{sort}</span><ChevronDown className="w-3.5 h-3.5 ml-0.5" />
             </button>
             {showSort && (
-              <div className="absolute top-8 left-3 z-30 bg-card border border-border rounded-xl shadow-lg p-1 w-64 fade-in">
+              <div className="absolute top-8 left-3 z-50 bg-card border border-border rounded-xl shadow-lg p-1 w-64 fade-in">
                 {(["Priority: Highest First", "Creation Date: Newest First", "Due Date: Soonest First"] as SortKey[]).map(s => (
                   <button key={s} onClick={() => { setSort(s); setShowSort(false); }}
                     className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors hover:bg-muted ${sort === s ? "text-primary font-semibold" : ""}`}>
@@ -1498,20 +2492,44 @@ export default function WorkOrders() {
 
         {/* RIGHT PANEL */}
         <div className="flex-1 overflow-hidden bg-background">
-          {showForm ? (
-            <div className="h-full overflow-y-auto">
-              <WOForm editName={editName} onClose={() => { setShowForm(false); setEditName(undefined); }}
-                onSaved={name => { setShowForm(false); setEditName(undefined); setSelectedName(name); refetch(); }} />
-            </div>
-          ) : selectedName ? (
-            <DetailView woName={selectedName} onStatusChange={() => { refetch(); }} />
+          {selectedName ? (
+            <DetailView
+              woName={selectedName}
+              onStatusChange={() => {
+                refetch();
+                setRefreshKey(k => k + 1);
+              }}
+              onEdit={(name) => { setEditName(name); setShowForm(true); }}
+              onSRClick={handleSRClick}
+              refreshKey={refreshKey}
+            />
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
-              <FileText className="w-10 h-10" /><p className="text-sm">Select a work order to view details</p>
+              <Package className="w-10 h-10 opacity-20" />
+              <p>Select a work order to view details</p>
             </div>
           )}
         </div>
       </div>
+
+      {/* WO Form Drawer */}
+      <Sheet open={showForm} onOpenChange={setShowForm}>
+        <SheetContent side="right" className="sm:max-w-[700px] p-0 overflow-y-auto">
+          <SheetHeader className="px-6 py-4 border-b sticky top-0 bg-background z-20">
+            <SheetTitle>{editName ? "Edit Work Order" : "New Work Order"}</SheetTitle>
+          </SheetHeader>
+          <WOForm
+            editName={editName}
+            onClose={() => setShowForm(false)}
+            onSaved={(name) => {
+              setShowForm(false);
+              refetch();
+              setRefreshKey(k => k + 1);
+              setSelectedName(name);
+            }}
+          />
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

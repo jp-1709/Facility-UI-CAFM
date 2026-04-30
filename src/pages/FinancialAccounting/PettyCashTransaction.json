@@ -1,0 +1,153 @@
+{
+  "name": "Petty Cash Transaction",
+  "doctype": "DocType",
+  "autoname": "PCTT-.####",
+  "module": "Accounts",
+  "is_submittable": 1,
+  "fields": [
+    {
+      "fieldname": "transaction_date",
+      "fieldtype": "Date",
+      "label": "Transaction Date",
+      "reqd": 1,
+      "default": "Today"
+    },
+    {
+      "fieldname": "petty_cash_account",
+      "fieldtype": "Link",
+      "label": "Petty Cash Account",
+      "options": "Account",
+      "reqd": 1,
+      "filters": [
+        {
+          "fieldname": "account_type",
+          "fieldtype": "Select",
+          "value": "Cash"
+        }
+      ]
+    },
+    {
+      "fieldname": "type",
+      "fieldtype": "Select",
+      "label": "Type",
+      "options": "Expense\nFund Addition\nAdjustment",
+      "reqd": 1,
+      "default": "Expense"
+    },
+    {
+      "fieldname": "amount",
+      "fieldtype": "Currency",
+      "label": "Amount",
+      "reqd": 1,
+      "options": "Company:company"
+    },
+    {
+      "fieldname": "description",
+      "fieldtype": "Small Text",
+      "label": "Description",
+      "reqd": 1
+    },
+    {
+      "fieldname": "expense_account",
+      "fieldtype": "Link",
+      "label": "Expense Account",
+      "options": "Account",
+      "depends_on": "eval:doc.type == 'Expense'",
+      "reqd": 1,
+      "filters": [
+        {
+          "fieldname": "account_type",
+          "fieldtype": "Select",
+          "value": "Expense"
+        }
+      ]
+    },
+    {
+      "fieldname": "employee",
+      "fieldtype": "Link",
+      "label": "Employee",
+      "options": "Employee",
+      "depends_on": "eval:doc.type == 'Expense'"
+    },
+    {
+      "fieldname": "receipt",
+      "fieldtype": "Attach",
+      "label": "Receipt",
+      "depends_on": "eval:doc.type == 'Expense'"
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "label": "Company",
+      "options": "Company",
+      "reqd": 1,
+      "default": "Company"
+    },
+    {
+      "fieldname": "cost_center",
+      "fieldtype": "Link",
+      "label": "Cost Center",
+      "options": "Cost Center",
+      "reqd": 1,
+      "default": "Petty Cash"
+    },
+    {
+      "fieldname": "section_break_1",
+      "fieldtype": "Section Break",
+      "label": "Additional Information"
+    },
+    {
+      "fieldname": "payee",
+      "fieldtype": "Data",
+      "label": "Payee",
+      "depends_on": "eval:doc.type == 'Expense'"
+    },
+    {
+      "fieldname": "reference_number",
+      "fieldtype": "Data",
+      "label": "Reference Number",
+      "depends_on": "eval:doc.type == 'Expense'"
+    },
+    {
+      "fieldname": "amended_from",
+      "fieldtype": "Link",
+      "label": "Amended From",
+      "options": "Petty Cash Transaction",
+      "hidden": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "submit": 1,
+      "cancel": 1,
+      "amend": 1,
+      "delete": 1
+    },
+    {
+      "role": "Accounts Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "submit": 1,
+      "cancel": 1,
+      "amend": 1
+    },
+    {
+      "role": "Accounts User",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "submit": 1,
+      "cancel": 0,
+      "amend": 0
+    }
+  ],
+  "title_field": "description",
+  "track_changes": 1,
+  "sort_order": "desc",
+  "sort_field": "transaction_date"
+}

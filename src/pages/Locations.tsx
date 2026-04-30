@@ -20,7 +20,9 @@ import {
   Camera, Paperclip, Users, QrCode, Layers, Home, Globe,
   Map, Navigation, Edit2, MoreVertical, Check, Wifi,
   Phone, User, FileText, Activity, ChevronDown, Maximize2,
+  FolderTree, Minus, MapPin as MapPinIcon, RotateCcw,
 } from "lucide-react";
+import { toast as sonnerToast } from "sonner";
 
 /* ═══════════════════════════════════════════
    INJECTED STYLES (keyframes + leaflet overrides)
@@ -104,6 +106,41 @@ const GLOBAL_CSS = `
 }
 .loc-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,.1); }
 .loc-card.selected-card { box-shadow: 0 0 0 2px var(--primary-color, #3b82f6), 0 8px 24px rgba(59,130,246,.15); }
+
+/* ── TREE BREAKDOWN STYLES ── */
+@keyframes treeExpand {
+  from { opacity:0; transform: translateY(-4px) scaleY(0.96); transform-origin: top; }
+  to   { opacity:1; transform: translateY(0) scaleY(1); }
+}
+@keyframes treeItemSlide {
+  from { opacity:0; transform: translateX(-6px); }
+  to   { opacity:1; transform: translateX(0); }
+}
+@keyframes bdBadgePop {
+  0%   { transform: scale(0.6); opacity:0; }
+  70%  { transform: scale(1.12); }
+  100% { transform: scale(1); opacity:1; }
+}
+.anim-tree      { animation: treeExpand 0.18s cubic-bezier(.4,0,.2,1) both; }
+.anim-tree-item { animation: treeItemSlide 0.16s cubic-bezier(.4,0,.2,1) both; }
+.bd-badge { animation: bdBadgePop 0.22s cubic-bezier(.4,0,.2,1) both; }
+
+.tree-node-row {
+  display: flex; align-items: center; border-radius: 10px;
+  cursor: pointer; transition: background .12s; user-select: none; position: relative;
+}
+.tree-node-row:hover { background: rgba(0,0,0,.04); }
+.tree-node-row.tree-selected {
+  background: rgba(79,70,229,.06);
+  outline: 1px solid rgba(79,70,229,.2);
+}
+.tree-chevron { transition: transform .16s cubic-bezier(.4,0,.2,1); }
+.tree-chevron.open { transform: rotate(90deg); }
+.tree-h-line {
+  height:1px; flex-shrink:0;
+  background: repeating-linear-gradient(90deg,#cbd5e1 0 4px,transparent 4px 8px);
+}
+
 `;
 
 function useGlobalStyles() {
@@ -207,14 +244,16 @@ function getCsrfToken(): string {
 ═══════════════════════════════════════════ */
 
 interface City { name: string; city_code: string; city_name: string; country?: string; country_code?: string; region?: string; time_zone?: string; currency?: string; is_active?: 0 | 1; }
-interface AreaGroup { name: string; area_group_code: string; area_group_name: string; city_code?: string; city_name?: string; region_manager?: string; is_active?: 0 | 1; }
-interface Area { name: string; area_code?: string; area_name: string; area_group_code?: string; area_group_name?: string; city_code?: string; gps_lat?: string; gps_long?: string; is_active?: 0 | 1; }
+interface Branch { name: string; branch_code: string; branch_name: string; city_code?: string; city_name?: string; branch_manager?: string; phone?: string; address?: string; is_active?: 0 | 1; }
+interface AreaGroup { name: string; area_group_code: string; area_group_name: string; branch_code?: string; branch_name?: string; city_code?: string; city_name?: string; region_manager?: string; is_active?: 0 | 1; }
+interface Area { name: string; area_code?: string; area_name: string; area_group_code?: string; area_group_name?: string; branch_code?: string; branch_name?: string; city_code?: string; gps_lat?: string; gps_long?: string; is_active?: 0 | 1; }
 
 interface Property {
   name: string; property_code: string; property_name: string;
   property_type?: string; business_type?: string;
   gfa_sqm?: number; floors?: number;
-  area_code?: string; area_name?: string; city_code?: string;
+  area_code?: string; area_name?: string;
+  branch_code?: string; branch_name?: string; city_code?: string;
   gps_lat?: number; gps_long?: number;
   location_contact?: string; contact_phone?: string;
   client_code?: string; client_name?: string;
@@ -225,7 +264,7 @@ interface Zone { name: string; zone_code: string; zone_name: string; property_co
 interface SubZone { name: string; sub_zone_code: string; sub_zone_name: string; zone_code: string; zone_name?: string; property_code?: string; business_type?: string; is_active?: 0 | 1; }
 interface BaseUnit { name: string; base_unit_code: string; base_unit_name: string; sub_zone_code: string; sub_zone_name?: string; zone_code?: string; property_code?: string; business_type?: string; gps_lat?: number; gps_long?: number; qr_code_ref?: string; is_active?: 0 | 1; }
 
-type LocationLevel = "city" | "area_group" | "area" | "property" | "zone" | "sub_zone" | "base_unit";
+type LocationLevel = "city" | "branch" | "area_group" | "area" | "property" | "zone" | "sub_zone" | "base_unit";
 interface SelectedLocation { level: LocationLevel; name: string; label: string; }
 
 /* ═══════════════════════════════════════════
@@ -275,6 +314,7 @@ function useFrappeDoc<T>(doctype: string, name: string) {
 
 const LEVEL_META: Record<LocationLevel, { label: string; icon: React.ReactNode; color: string; accent: string }> = {
   city: { label: "City", icon: <Globe className="w-4 h-4" />, color: "text-blue-600 bg-blue-50 border-blue-200", accent: "#2563eb" },
+  branch: { label: "Branch", icon: <Building2 className="w-4 h-4" />, color: "text-sky-600 bg-sky-50 border-sky-200", accent: "#0284c7" },
   area_group: { label: "Area Group", icon: <Map className="w-4 h-4" />, color: "text-violet-600 bg-violet-50 border-violet-200", accent: "#7c3aed" },
   area: { label: "Area", icon: <Navigation className="w-4 h-4" />, color: "text-teal-600 bg-teal-50 border-teal-200", accent: "#0d9488" },
   property: { label: "Property", icon: <Building2 className="w-4 h-4" />, color: "text-indigo-600 bg-indigo-50 border-indigo-200", accent: "#4f46e5" },
@@ -664,7 +704,7 @@ function MiniMap({ lat, lng, name, propertyType }: { lat: number; lng: number; n
    NEW LOCATION FORM
 ═══════════════════════════════════════════ */
 
-type NewLocLevel = "property" | "zone" | "sub_zone" | "base_unit" | "city" | "area";
+type NewLocLevel = "property" | "zone" | "sub_zone" | "base_unit" | "city" | "branch" | "area" | "area_group";
 
 interface NewLocForm {
   level: NewLocLevel; name_field: string; is_active: boolean;
@@ -677,6 +717,9 @@ interface NewLocForm {
   base_unit_code: string; sub_zone_link: string; qr_code_ref: string;
   city_name: string; city_code_field: string; country: string; region: string; time_zone: string;
   area_name_field: string; area_code_field: string; area_group_code: string;
+  // Branch fields
+  branch_code_field: string; branch_name_field: string; branch_manager: string; branch_phone: string; branch_address: string;
+  branch_link: string; // used when picking a branch for Area Group / Area
 }
 
 const BLANK_LOC: NewLocForm = {
@@ -689,6 +732,8 @@ const BLANK_LOC: NewLocForm = {
   base_unit_code: "", sub_zone_link: "", qr_code_ref: "",
   city_name: "", city_code_field: "", country: "", region: "", time_zone: "",
   area_name_field: "", area_code_field: "", area_group_code: "",
+  branch_code_field: "", branch_name_field: "", branch_manager: "", branch_phone: "", branch_address: "",
+  branch_link: "",
 };
 
 function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
@@ -698,6 +743,10 @@ function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreate
   const set = (k: keyof NewLocForm) => (v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
 
   const { data: cities } = useFrappeList<City>("City", ["name", "city_code", "city_name"], [], []);
+  const { data: branches } = useFrappeList<Branch>("Branch", ["name", "branch_code", "branch_name", "city_code"], [], []);
+  const branchesFiltered = form.city_code ? branches.filter(b => b.city_code === form.city_code) : branches;
+  const { data: areaGroups } = useFrappeList<AreaGroup>("Area Group", ["name", "area_group_code", "area_group_name", "branch_code"], [], []);
+  const areaGroupsFiltered = form.branch_link ? areaGroups.filter(ag => ag.branch_code === form.branch_link) : areaGroups;
   const { data: properties } = useFrappeList<Property>("Property", ["name", "property_code", "property_name"], [["is_active", "=", 1]], []);
   const { data: zones } = useFrappeList<Zone>("Zone",
     ["name", "zone_code", "zone_name"],
@@ -752,7 +801,70 @@ function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreate
             country: form.country, region: form.region, time_zone: form.time_zone,
             is_active: form.is_active ? 1 : 0,
           }); break;
+        case "area_group":
+          await frappeCreate("Area Group", {
+            area_group_code: form.area_group_code, area_group_name: form.name_field,
+            branch_code: form.branch_link, region_manager: "", is_active: form.is_active ? 1 : 0,
+          }); break;
+        case "branch":
+          await frappeCreate("Branch", {
+            branch_code: form.branch_code_field, branch_name: form.branch_name_field,
+            city_code: form.city_code, branch_manager: form.branch_manager,
+            phone: form.branch_phone, address: form.branch_address,
+            is_active: form.is_active ? 1 : 0,
+          }); break;
       }
+
+      // 🎉 Professional toast notification for location creation
+      const levelLabels = {
+        property: "Property",
+        zone: "Zone", 
+        sub_zone: "Sub Zone",
+        base_unit: "Base Unit",
+        city: "City",
+        area_group: "Area Group",
+        branch: "Branch"
+      };
+
+      const locationCode = form.level === "property" ? form.property_code :
+                          form.level === "zone" ? form.zone_code :
+                          form.level === "sub_zone" ? form.sub_zone_code :
+                          form.level === "base_unit" ? form.base_unit_code :
+                          form.level === "city" ? form.city_code_field :
+                          form.level === "area_group" ? form.area_group_code :
+                          form.level === "branch" ? form.branch_code_field : "";
+
+      sonnerToast.success(
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <div className="w-12 h-12 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center border border-white/20">
+              <MapPinIcon className="w-6 h-6 text-white" />
+            </div>
+            <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full animate-pulse border-2 border-white" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="font-semibold text-base text-white leading-tight">{levelLabels[form.level as keyof typeof levelLabels]} Created</span>
+            <span className="text-sm text-white/80 leading-tight">{locationCode} • Created successfully</span>
+          </div>
+        </div>,
+        {
+          duration: 5000,
+          position: 'top-right',
+          icon: null,
+          style: {
+            background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+            color: 'white',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            borderRadius: '16px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+            padding: '24px',
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+          },
+          className: 'animate-bounce-in',
+        }
+      );
+
       onCreated();
     } catch (e: unknown) { setSaveError((e as Error).message); }
     finally { setSaving(false); }
@@ -792,7 +904,7 @@ function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreate
           <button onClick={onClose} className="p-1.5 hover:bg-muted rounded-lg transition-colors"><X className="w-4 h-4" /></button>
         </div>
         <div className="flex flex-wrap gap-2">
-          {(["city", "area", "property", "zone", "sub_zone", "base_unit"] as NewLocLevel[]).map((lv) => {
+          {(["city", "branch", "area_group", "area", "property", "zone", "sub_zone", "base_unit"] as NewLocLevel[]).map((lv) => {
             const m = LEVEL_META[lv as LocationLevel];
             return (
               <button key={lv} onClick={() => set("level")(lv)}
@@ -838,12 +950,37 @@ function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreate
           </>
         )}
 
+        {form.level === "branch" && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <FInput label="Branch Code" fk="branch_code_field" placeholder="e.g. BR-001" required />
+              <FInput label="Branch Name" fk="branch_name_field" placeholder="e.g. South Mumbai" required />
+            </div>
+            <FSelect label="City" fk="city_code" required options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
+            <div className="grid grid-cols-2 gap-3">
+              <FInput label="Branch Manager" fk="branch_manager" placeholder="Manager name" />
+              <FInput label="Phone" fk="branch_phone" placeholder="+91 00000 00000" />
+            </div>
+            <FInput label="Address" fk="branch_address" placeholder="Branch address" />
+          </>
+        )}
+
+        {form.level === "area_group" && (
+          <>
+            <FInput label="Area Group Code" fk="area_group_code" placeholder="e.g. AG001" required />
+            <FInput label="Area Group Name" fk="name_field" placeholder="e.g. Commercial District" required />
+            <FSelect label="City (optional)" fk="city_code" options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
+            <FSelect label="Branch" fk="branch_link" required
+              options={(form.city_code ? branchesFiltered : branches).map((b) => ({ v: b.name, l: `${b.branch_code} — ${b.branch_name}` }))} />
+          </>
+        )}
         {form.level === "area" && (
           <>
             <FInput label="Area Code" fk="area_code_field" placeholder="e.g. A001" />
             <FInput label="Area Name" fk="area_name_field" placeholder="e.g. Al Khuwair" required />
-            <FSelect label="City" fk="city_code" options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
-            <FInput label="Area Group Code" fk="area_group_code" placeholder="e.g. AG001" />
+            <FSelect label="City (optional)" fk="city_code" options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
+            <FSelect label="Branch (optional)" fk="branch_link" options={(form.city_code ? branchesFiltered : branches).map((b) => ({ v: b.name, l: `${b.branch_code} — ${b.branch_name}` }))} />
+            <FSelect label="Area Group" fk="area_group_code" required options={areaGroupsFiltered.map((ag) => ({ v: ag.name, l: `${ag.area_group_code} — ${ag.area_group_name}` }))} />
             <div className="grid grid-cols-2 gap-3">
               <FInput label="GPS Latitude" fk="gps_lat" type="number" placeholder="23.5880" />
               <FInput label="GPS Longitude" fk="gps_long" type="number" placeholder="58.3829" />
@@ -1293,6 +1430,771 @@ function CardGridOverview({ items, level, selected, onSelect }: CardGridOverview
 }
 
 /* ═══════════════════════════════════════════
+   BRANCH DETAIL PANEL
+═══════════════════════════════════════════ */
+function BranchDetail({ name }: { name: string }) {
+  const { data: b, loading, error } = useFrappeDoc<Branch>("Branch", name);
+  if (loading) return (
+    <div className="flex items-center justify-center py-16">
+      <Loader2 className="w-5 h-5 animate-spin text-primary" />
+    </div>
+  );
+  if (error) return (
+    <div className="flex items-center gap-3 px-4 py-3 bg-destructive/10 border border-destructive/20 rounded-xl m-4 text-xs text-destructive">
+      <AlertCircle className="w-4 h-4 shrink-0" /> {error}
+    </div>
+  );
+  if (!b) return null;
+
+  const accent = LEVEL_META.branch.accent;
+
+  return (
+    <div className="anim-fade-slide">
+      {/* hero header */}
+      <div className="px-6 pt-6 pb-5 border-b border-border/70"
+        style={{ background: `linear-gradient(135deg, ${accent}0a 0%, transparent 60%)` }}>
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl shadow-sm border border-white"
+              style={{ background: `${accent}18` }}>🏢</div>
+            <div>
+              <h2 className="text-xl font-bold text-foreground leading-tight">{b.branch_name}</h2>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${LEVEL_META.branch.color}`}>
+                  {LEVEL_META.branch.icon} Branch
+                </span>
+                <code className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{b.branch_code}</code>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${b.is_active ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-gray-100 text-gray-400 border border-gray-200"}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${b.is_active ? "bg-emerald-500" : "bg-gray-300"}`} />
+                  {b.is_active ? "Active" : "Inactive"}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground border border-border rounded-lg hover:bg-muted transition-colors">
+              <Edit2 className="w-3 h-3" /> Edit
+            </button>
+            <button className="p-1.5 rounded-lg hover:bg-muted transition-colors">
+              <MoreVertical className="w-4 h-4 text-muted-foreground" />
+            </button>
+          </div>
+        </div>
+        {b.city_name && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted/50 border border-border/50 text-xs text-foreground font-medium w-fit">
+            <Globe className="w-3.5 h-3.5 text-muted-foreground" /> {b.city_name}{b.city_code ? ` (${b.city_code})` : ""}
+          </div>
+        )}
+      </div>
+
+      <div className="px-6 py-5">
+        {/* Branch Info */}
+        <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2">Branch Details</p>
+        <div className="bg-muted/20 rounded-xl border border-border/60 px-4 divide-y divide-border/40 mb-4">
+          {b.branch_manager && (
+            <div className="flex items-center gap-3 py-2.5">
+              <User className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <span className="text-xs text-muted-foreground w-28 shrink-0">Branch Manager</span>
+              <span className="text-sm text-foreground font-medium">{b.branch_manager}</span>
+            </div>
+          )}
+          {b.phone && (
+            <div className="flex items-center gap-3 py-2.5">
+              <Phone className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <span className="text-xs text-muted-foreground w-28 shrink-0">Phone</span>
+              <span className="text-sm text-foreground font-medium">{b.phone}</span>
+            </div>
+          )}
+          {b.city_code && (
+            <div className="flex items-center gap-3 py-2.5">
+              <Globe className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <span className="text-xs text-muted-foreground w-28 shrink-0">City</span>
+              <span className="text-sm text-foreground font-medium">{b.city_name || b.city_code}</span>
+            </div>
+          )}
+        </div>
+
+        {b.address && (
+          <>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2">Address</p>
+            <div className="bg-muted/20 rounded-xl border border-border/60 px-4 py-3 mb-4 flex items-start gap-2.5">
+              <MapPin className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
+              <p className="text-sm text-foreground leading-relaxed">{b.address}</p>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   COUNT BADGE
+═══════════════════════════════════════════ */
+function CountBadge({ count, color, label }: { count: number; color: string; label: string }) {
+  return (
+    <span className="bd-badge inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold whitespace-nowrap"
+      style={{ background: `${color}18`, color, border: `1px solid ${color}28` }}>
+      {count} {label}
+    </span>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   INDENT GUIDE LINES
+═══════════════════════════════════════════ */
+function IndentLines({ depth }: { depth: number }) {
+  return (
+    <>
+      {Array.from({ length: depth }).map((_, i) => (
+        <div key={i} className="absolute top-0 bottom-0 pointer-events-none"
+          style={{
+            left: `${i * 22 + 18}px`, width: 1,
+            background: "repeating-linear-gradient(180deg,#e2e8f0 0 5px,transparent 5px 10px)"
+          }} />
+      ))}
+    </>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   BASE UNIT NODE (leaf)
+═══════════════════════════════════════════ */
+function BaseUnitNode({
+  b, depth, selName, selLevel, onSelect,
+}: {
+  b: BaseUnit; depth: number;
+  selName: string | null; selLevel: LocationLevel | null;
+  onSelect: (level: LocationLevel, name: string, label: string) => void;
+}) {
+  const accent = LEVEL_META.base_unit.accent;
+  const isSelected = selLevel === "base_unit" && selName === b.name;
+  return (
+    <div className="relative anim-tree-item" style={{ animationDelay: "10ms" }}>
+      <IndentLines depth={depth} />
+      <div
+        className={`tree-node-row ${isSelected ? "tree-selected" : ""} mx-1`}
+        style={{ paddingLeft: `${depth * 22 + 8}px`, paddingRight: 8, paddingTop: 6, paddingBottom: 6 }}
+        onClick={() => onSelect("base_unit", b.name, b.base_unit_name)}
+      >
+        <div className="tree-h-line mr-2 shrink-0" style={{ width: 10 }} />
+        <div className="w-5 h-5 rounded flex items-center justify-center shrink-0 mr-2"
+          style={{ background: `${accent}18`, color: accent }}>
+          <QrCode className="w-2.5 h-2.5" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-foreground truncate leading-tight">{b.base_unit_name}</p>
+          <p className="text-[10px] font-mono text-muted-foreground/55 truncate">{b.base_unit_code}</p>
+        </div>
+        <div className="flex items-center gap-1.5 ml-2 shrink-0">
+          {b.qr_code_ref && (
+            <span className="text-[9px] font-mono text-muted-foreground/50 bg-muted px-1 rounded hidden sm:inline">{b.qr_code_ref}</span>
+          )}
+          <span className={`w-1.5 h-1.5 rounded-full ${b.is_active ? "bg-emerald-400" : "bg-gray-300"}`} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   SUB ZONE NODE
+═══════════════════════════════════════════ */
+function SubZoneNode({
+  s, depth, selName, selLevel, onSelect,
+}: {
+  s: SubZone; depth: number;
+  selName: string | null; selLevel: LocationLevel | null;
+  onSelect: (level: LocationLevel, name: string, label: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const { data: baseUnits, loading } = useFrappeList<BaseUnit>(
+    "Base Unit",
+    ["name", "base_unit_code", "base_unit_name", "sub_zone_code", "qr_code_ref", "is_active"],
+    [["sub_zone_code", "=", s.name], ["is_active", "=", 1]],
+    [s.name, expanded], !expanded
+  );
+  const accent = LEVEL_META.sub_zone.accent;
+  const isSelected = selLevel === "sub_zone" && selName === s.name;
+
+  return (
+    <div className="relative anim-tree-item">
+      <IndentLines depth={depth} />
+      <div
+        className={`tree-node-row ${isSelected ? "tree-selected" : ""} mx-1`}
+        style={{ paddingLeft: `${depth * 22 + 8}px`, paddingRight: 8, paddingTop: 7, paddingBottom: 7 }}
+        onClick={() => { onSelect("sub_zone", s.name, s.sub_zone_name); setExpanded((v) => !v); }}
+      >
+        <div className="tree-h-line mr-1 shrink-0" style={{ width: 8 }} />
+        <button
+          className="w-5 h-5 rounded flex items-center justify-center shrink-0 mr-1.5 hover:bg-muted transition-colors"
+          onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}>
+          <ChevronRight className={`w-3 h-3 text-muted-foreground tree-chevron ${expanded ? "open" : ""}`} />
+        </button>
+        <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 mr-2"
+          style={{ background: `${accent}18`, color: accent }}>
+          <Home className="w-3 h-3" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-foreground truncate leading-tight">{s.sub_zone_name}</p>
+          <p className="text-[10px] font-mono text-muted-foreground/55">{s.sub_zone_code}</p>
+        </div>
+        <div className="flex items-center gap-1.5 ml-2 shrink-0">
+          {expanded && !loading && baseUnits.length > 0 && (
+            <CountBadge count={baseUnits.length} color={LEVEL_META.base_unit.accent} label="BU" />
+          )}
+          {loading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
+          <span className={`w-1.5 h-1.5 rounded-full ${s.is_active ? "bg-emerald-400" : "bg-gray-300"}`} />
+        </div>
+      </div>
+      {expanded && (
+        <div className="anim-tree">
+          {loading && (
+            <div className="flex items-center gap-2 py-2" style={{ paddingLeft: `${(depth + 1) * 22 + 20}px` }}>
+              <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+              <span className="text-[10px] text-muted-foreground">Loading base units…</span>
+            </div>
+          )}
+          {!loading && baseUnits.length === 0 && (
+            <p className="text-[10px] text-muted-foreground/50 py-1.5 italic"
+              style={{ paddingLeft: `${(depth + 1) * 22 + 34}px` }}>No base units</p>
+          )}
+          {!loading && baseUnits.map((b) => (
+            <BaseUnitNode key={b.name} b={b} depth={depth + 1}
+              selName={selName} selLevel={selLevel} onSelect={onSelect} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   ZONE NODE
+═══════════════════════════════════════════ */
+function ZoneNode({
+  z, depth, selName, selLevel, onSelect,
+}: {
+  z: Zone; depth: number;
+  selName: string | null; selLevel: LocationLevel | null;
+  onSelect: (level: LocationLevel, name: string, label: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const { data: subZones, loading } = useFrappeList<SubZone>(
+    "Sub Zone",
+    ["name", "sub_zone_code", "sub_zone_name", "zone_code", "property_code", "business_type", "is_active"],
+    [["zone_code", "=", z.name], ["is_active", "=", 1]],
+    [z.name, expanded], !expanded
+  );
+  const accent = LEVEL_META.zone.accent;
+  const isSelected = selLevel === "zone" && selName === z.name;
+
+  return (
+    <div className="relative anim-tree-item">
+      <IndentLines depth={depth} />
+      <div
+        className={`tree-node-row ${isSelected ? "tree-selected" : ""} mx-1`}
+        style={{ paddingLeft: `${depth * 22 + 8}px`, paddingRight: 8, paddingTop: 8, paddingBottom: 8 }}
+        onClick={() => { onSelect("zone", z.name, z.zone_name); setExpanded((v) => !v); }}
+      >
+        <div className="tree-h-line mr-1 shrink-0" style={{ width: 8 }} />
+        <button
+          className="w-5 h-5 rounded flex items-center justify-center shrink-0 mr-1.5 hover:bg-muted transition-colors"
+          onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}>
+          <ChevronRight className={`w-3 h-3 text-muted-foreground tree-chevron ${expanded ? "open" : ""}`} />
+        </button>
+        <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 mr-2"
+          style={{ background: `${accent}18`, color: accent }}>
+          <Layers className="w-3 h-3" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-foreground truncate leading-tight">{z.zone_name}</p>
+          <p className="text-[10px] font-mono text-muted-foreground/55 truncate">
+            {z.zone_code}{z.floor_level ? ` · Floor ${z.floor_level}` : ""}
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 ml-2 shrink-0">
+          {expanded && !loading && subZones.length > 0 && (
+            <CountBadge count={subZones.length} color={LEVEL_META.sub_zone.accent} label="SZ" />
+          )}
+          {loading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
+          <span className={`w-1.5 h-1.5 rounded-full ${z.is_active ? "bg-emerald-400" : "bg-gray-300"}`} />
+        </div>
+      </div>
+      {expanded && (
+        <div className="anim-tree">
+          {loading && (
+            <div className="flex items-center gap-2 py-2" style={{ paddingLeft: `${(depth + 1) * 22 + 20}px` }}>
+              <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+              <span className="text-[10px] text-muted-foreground">Loading sub zones…</span>
+            </div>
+          )}
+          {!loading && subZones.length === 0 && (
+            <p className="text-[10px] text-muted-foreground/50 py-1.5 italic"
+              style={{ paddingLeft: `${(depth + 1) * 22 + 34}px` }}>No sub zones</p>
+          )}
+          {!loading && subZones.map((s) => (
+            <SubZoneNode key={s.name} s={s} depth={depth + 1}
+              selName={selName} selLevel={selLevel} onSelect={onSelect} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   PROPERTY NODE (top-level)
+═══════════════════════════════════════════ */
+function PropertyNode({
+  p, selName, selLevel, onSelect,
+}: {
+  p: Property;
+  selName: string | null; selLevel: LocationLevel | null;
+  onSelect: (level: LocationLevel, name: string, label: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const { data: zones, loading } = useFrappeList<Zone>(
+    "Zone",
+    ["name", "zone_code", "zone_name", "property_code", "floor_level", "business_type", "is_active"],
+    [["property_code", "=", p.name], ["is_active", "=", 1]],
+    [p.name, expanded], !expanded
+  );
+  const typeColor = PROPERTY_TYPE_COLORS[p.property_type || ""] || "#4f46e5";
+  const typeEmoji = PROPERTY_TYPE_ICONS[p.property_type || ""] || "🏢";
+  const isSelected = selLevel === "property" && selName === p.name;
+
+  return (
+    <div className="relative mb-0.5">
+      <div
+        className={`tree-node-row ${isSelected ? "tree-selected" : ""} mx-1 rounded-xl`}
+        style={{ paddingLeft: 8, paddingRight: 8, paddingTop: 9, paddingBottom: 9 }}
+        onClick={() => { onSelect("property", p.name, p.property_name); setExpanded((v) => !v); }}
+      >
+        <button
+          className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mr-2 transition-all
+            ${expanded ? "bg-primary/15 text-primary" : "hover:bg-muted text-muted-foreground"}`}
+          onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}>
+          <ChevronRight className={`w-3.5 h-3.5 tree-chevron ${expanded ? "open" : ""}`} />
+        </button>
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base shrink-0 mr-3 border"
+          style={{ background: `${typeColor}15`, borderColor: `${typeColor}28` }}>
+          {typeEmoji}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold text-foreground truncate leading-tight">{p.property_name}</p>
+          <p className="text-[10px] font-mono text-muted-foreground/65 truncate">
+            {p.property_code}{p.branch_name ? ` · ${p.branch_name}` : p.area_name ? ` · ${p.area_name}` : ""}{p.city_code ? ` · ${p.city_code}` : ""}
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 ml-2 shrink-0 flex-wrap justify-end max-w-[140px]">
+          {p.property_type && (
+            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full hidden sm:inline-flex"
+              style={{ color: typeColor, background: `${typeColor}15`, border: `1px solid ${typeColor}28` }}>
+              {p.property_type}
+            </span>
+          )}
+          {expanded && !loading && zones.length > 0 && (
+            <CountBadge count={zones.length} color={LEVEL_META.zone.accent} label="Zones" />
+          )}
+          {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+          <span className={`w-2 h-2 rounded-full ${p.is_active ? "bg-emerald-500" : "bg-gray-300"}`} />
+        </div>
+      </div>
+      {expanded && (
+        <div className="anim-tree pb-1 pl-2">
+          {loading && (
+            <div className="flex items-center gap-2 py-2.5 pl-10">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Loading zones…</span>
+            </div>
+          )}
+          {!loading && zones.length === 0 && (
+            <div className="flex items-center gap-2 py-2 pl-10 text-muted-foreground">
+              <Minus className="w-3 h-3" />
+              <span className="text-xs italic">No zones configured</span>
+            </div>
+          )}
+          {!loading && zones.map((z) => (
+            <ZoneNode key={z.name} z={z} depth={1}
+              selName={selName} selLevel={selLevel} onSelect={onSelect} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   BREADCRUMB PATH BAR
+═══════════════════════════════════════════ */
+interface BreadcrumbPath {
+  branch?: { name: string; label: string };
+  property?: { name: string; label: string };
+  zone?: { name: string; label: string };
+  sub_zone?: { name: string; label: string };
+  base_unit?: { name: string; label: string };
+}
+
+function BreadcrumbBar({
+  path, onJump,
+}: {
+  path: BreadcrumbPath;
+  onJump: (level: LocationLevel, name: string, label: string) => void;
+}) {
+  const steps: { level: LocationLevel; name: string; label: string }[] = [];
+  if (path.branch) steps.push({ level: "branch", ...path.branch });
+  if (path.property) steps.push({ level: "property", ...path.property });
+  if (path.zone) steps.push({ level: "zone", ...path.zone });
+  if (path.sub_zone) steps.push({ level: "sub_zone", ...path.sub_zone });
+  if (path.base_unit) steps.push({ level: "base_unit", ...path.base_unit });
+  if (steps.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1 flex-wrap px-4 py-2 bg-muted/30 border-b border-border/50 anim-fade">
+      <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mr-1">Path:</span>
+      {steps.map((s, i) => {
+        const m = LEVEL_META[s.level];
+        return (
+          <span key={s.name} className="flex items-center gap-1">
+            {i > 0 && <ChevronRight className="w-3 h-3 text-muted-foreground/40" />}
+            <button onClick={() => onJump(s.level, s.name, s.label)}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold transition-all hover:bg-card"
+              style={{ color: m.accent }}>
+              {m.icon}<span className="ml-0.5">{s.label}</span>
+            </button>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   BREAKDOWN STATS STRIP — Branch-level
+═══════════════════════════════════════════ */
+function BreakdownStats({ branches, properties }: { branches: Branch[]; properties: Property[] }) {
+  const activeBranches = branches.filter((b) => b.is_active).length;
+  const activeProps    = properties.filter((p) => p.is_active).length;
+  const cities = [...new Set(branches.map((b) => b.city_name).filter(Boolean))] as string[];
+  return (
+    <div className="flex items-center gap-4 px-4 py-2 bg-muted/10 border-b border-border/50 flex-wrap">
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Building2 className="w-3 h-3 text-sky-500" />
+        <span className="font-semibold text-foreground">{activeBranches}</span>
+        <span>/ {branches.length} Branches</span>
+      </div>
+      <div className="h-3.5 w-px bg-border" />
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="w-2 h-2 rounded-full bg-indigo-400" />
+        <span className="font-semibold text-foreground">{activeProps}</span> Properties
+      </div>
+      {cities.length > 0 && (
+        <>
+          <div className="h-3.5 w-px bg-border" />
+          <div className="flex items-center gap-1 flex-wrap">
+            {cities.slice(0, 4).map((c) => (
+              <span key={c} className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-sky-50 text-sky-700">
+                🌆 {c}
+              </span>
+            ))}
+          </div>
+        </>
+      )}
+      <div className="ml-auto text-xs font-semibold text-muted-foreground">{branches.length} branches</div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   BRANCH NODE — top-level root in Hierarchy view
+   Branch → Property → Zone → Sub Zone → Base Unit
+═══════════════════════════════════════════════════════════ */
+
+function BranchNode({
+  b, selName, selLevel, onSelect, propertyList,
+}: {
+  b: Branch;
+  selName: string | null;
+  selLevel: LocationLevel | null;
+  onSelect: (level: LocationLevel, name: string, label: string) => void;
+  propertyList: Property[];   /* pre-loaded, filtered per branch */
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const branchAccent = LEVEL_META.branch.accent;
+  const isSelected = selLevel === "branch" && selName === b.name;
+
+  /* Properties that belong to this branch */
+  const branchProperties = useMemo(
+    () => propertyList.filter((p) => p.branch_code === b.name),
+    [propertyList, b.name]
+  );
+
+  return (
+    <div className="relative mb-1">
+      {/* Branch row */}
+      <div
+        className={`tree-node-row ${isSelected ? "tree-selected" : ""} mx-1 rounded-xl`}
+        style={{ paddingLeft: 8, paddingRight: 8, paddingTop: 10, paddingBottom: 10 }}
+        onClick={() => { onSelect("branch", b.name, b.branch_name); setExpanded((v) => !v); }}
+      >
+        {/* expand toggle */}
+        <button
+          className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mr-2 transition-all
+            ${expanded ? "bg-sky-100 text-sky-600" : "hover:bg-muted text-muted-foreground"}`}
+          onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+        >
+          <ChevronRight className={`w-3.5 h-3.5 tree-chevron ${expanded ? "open" : ""}`} />
+        </button>
+
+        {/* icon */}
+        <div
+          className="w-10 h-10 rounded-2xl flex items-center justify-center text-xl shrink-0 mr-3 border"
+          style={{ background: `${branchAccent}14`, borderColor: `${branchAccent}28` }}
+        >
+          🏢
+        </div>
+
+        {/* text */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold text-foreground truncate leading-tight">{b.branch_name}</p>
+          <p className="text-[10px] font-mono text-muted-foreground/65 truncate">
+            {b.branch_code}{b.city_name ? ` · ${b.city_name}` : ""}
+            {b.branch_manager ? ` · Mgr: ${b.branch_manager}` : ""}
+          </p>
+        </div>
+
+        {/* right badges */}
+        <div className="flex items-center gap-1.5 ml-2 shrink-0 flex-wrap justify-end max-w-[160px]">
+          {b.city_name && (
+            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full hidden sm:inline-flex"
+              style={{ color: branchAccent, background: `${branchAccent}14`, border: `1px solid ${branchAccent}28` }}>
+              🌆 {b.city_name}
+            </span>
+          )}
+          {branchProperties.length > 0 && (
+            <CountBadge count={branchProperties.length} color={LEVEL_META.property.accent} label="Props" />
+          )}
+          <span className={`w-2 h-2 rounded-full ${b.is_active ? "bg-emerald-500" : "bg-gray-300"}`} />
+        </div>
+      </div>
+
+      {/* Children: Properties */}
+      {expanded && (
+        <div className="anim-tree pb-1 pl-3">
+          {branchProperties.length === 0 && (
+            <div className="flex items-center gap-2 py-2 pl-10 text-muted-foreground">
+              <Minus className="w-3 h-3" />
+              <span className="text-xs italic">No properties in this branch</span>
+            </div>
+          )}
+          {branchProperties.map((p) => (
+            <PropertyNode
+              key={p.name}
+              p={p}
+              selName={selName}
+              selLevel={selLevel}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   MAIN BREAKDOWN VIEW — Branch-rooted hierarchy
+   Branch → Property → Zone → Sub Zone → Base Unit
+═══════════════════════════════════════════ */
+interface BdSelected { level: LocationLevel; name: string; label: string; }
+
+function LocationBreakdownView({
+  properties, loading: propLoading, error: propError,
+}: { properties: Property[]; loading: boolean; error: string | null }) {
+  const [bdSearch, setBdSearch] = useState("");
+  const [bdSelected, setBdSelected] = useState<BdSelected | null>(null);
+  const [breadcrumb, setBreadcrumb] = useState<BreadcrumbPath>({});
+
+  /* fetch all branches */
+  const { data: branches, loading: branchLoading, error: branchError } =
+    useFrappeList<Branch>(
+      "Branch",
+      ["name", "branch_code", "branch_name", "city_code", "city_name", "branch_manager", "phone", "is_active"],
+      [["is_active", "=", 1]],
+      []
+    );
+
+  const loading = branchLoading || propLoading;
+  const error   = branchError   || propError;
+
+  /* filter branches by search (matches branch name/code/city) */
+  const filteredBranches = useMemo(() => {
+    if (!bdSearch) return branches;
+    const q = bdSearch.toLowerCase();
+    return branches.filter(
+      (b) =>
+        b.branch_name.toLowerCase().includes(q) ||
+        b.branch_code.toLowerCase().includes(q) ||
+        (b.city_name || "").toLowerCase().includes(q)
+    );
+  }, [branches, bdSearch]);
+
+  const handleSelect = (level: LocationLevel, name: string, label: string) => {
+    setBdSelected({ level, name, label });
+    setBreadcrumb((prev) => {
+      const next: BreadcrumbPath = {};
+      if (level === "branch")   { next.branch = { name, label }; }
+      else if (level === "property")  { next.branch = prev.branch; next.property = { name, label }; }
+      else if (level === "zone")      { next.branch = prev.branch; next.property = prev.property; next.zone = { name, label }; }
+      else if (level === "sub_zone")  { next.branch = prev.branch; next.property = prev.property; next.zone = prev.zone; next.sub_zone = { name, label }; }
+      else                            { next.branch = prev.branch; next.property = prev.property; next.zone = prev.zone; next.sub_zone = prev.sub_zone; next.base_unit = { name, label }; }
+      return next;
+    });
+  };
+
+  return (
+    <div className="flex flex-col flex-1 overflow-hidden anim-fade-slide bg-background">
+      {/* header */}
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-border bg-card">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-xl bg-sky-100 flex items-center justify-center shrink-0">
+            <FolderTree className="w-4 h-4 text-sky-600" />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-foreground">Location Hierarchy</p>
+            <p className="text-[10px] text-muted-foreground">Branch → Property → Zone → Sub Zone → Base Unit</p>
+          </div>
+        </div>
+        {/* search */}
+        <div className="relative ml-auto">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+          <input
+            value={bdSearch} onChange={(e) => setBdSearch(e.target.value)}
+            className="pl-9 pr-8 py-1.5 border border-border rounded-lg text-xs bg-background w-52 focus:outline-none focus:ring-2 focus:ring-ring transition-all"
+            placeholder="Filter branches…" />
+          {bdSearch && (
+            <button onClick={() => setBdSearch("")} className="absolute right-2.5 top-1/2 -translate-y-1/2">
+              <X className="w-3 h-3 text-muted-foreground" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* stats strip */}
+      {!loading && !error && (
+        <BreakdownStats branches={branches} properties={properties} />
+      )}
+
+      {/* breadcrumb */}
+      {bdSelected && (
+        <BreadcrumbBar
+          path={breadcrumb}
+          onJump={(lv, n, l) => setBdSelected({ level: lv, name: n, label: l })}
+        />
+      )}
+
+      {/* ── body: tree + detail ── */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* tree panel */}
+        <div className="w-[440px] min-w-[380px] border-r border-border flex flex-col bg-card overflow-hidden">
+          {/* level legend */}
+          <div className="flex items-center gap-3 px-4 py-2 border-b border-border/50 bg-muted/10 flex-wrap">
+            {(["branch", "property", "zone", "sub_zone", "base_unit"] as LocationLevel[]).map((lv) => {
+              const m = LEVEL_META[lv];
+              return (
+                <div key={lv} className="flex items-center gap-1">
+                  <span style={{ color: m.accent }}>{m.icon}</span>
+                  <span className="text-[10px] text-muted-foreground font-medium">{m.label}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* tree list */}
+          <div className="flex-1 overflow-y-auto py-2 px-1">
+            {loading && (
+              <div className="flex items-center justify-center py-16">
+                <Loader2 className="w-5 h-5 animate-spin text-primary" />
+              </div>
+            )}
+            {error && (
+              <div className="mx-3 mt-3 px-4 py-3 bg-destructive/10 border border-destructive/20 rounded-xl text-xs text-destructive flex items-center gap-2">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {error}
+              </div>
+            )}
+
+            {!loading && !error && filteredBranches.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-20 gap-3">
+                <Building2 className="w-8 h-8 text-muted-foreground" />
+                <p className="text-sm font-semibold text-foreground">No branches found</p>
+                {bdSearch && (
+                  <button onClick={() => setBdSearch("")} className="text-xs text-primary hover:underline">
+                    Clear search
+                  </button>
+                )}
+              </div>
+            )}
+
+            {!loading && !error && filteredBranches.map((b) => (
+              <BranchNode
+                key={b.name}
+                b={b}
+                selName={bdSelected?.name ?? null}
+                selLevel={bdSelected?.level ?? null}
+                onSelect={handleSelect}
+                propertyList={properties}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* detail panel */}
+        <div className="flex-1 overflow-y-auto bg-background">
+          {!bdSelected ? (
+            <div className="flex flex-col items-center justify-center h-full gap-5 px-8">
+              <div className="relative">
+                <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-sky-100 to-indigo-50 flex items-center justify-center border border-sky-100/80">
+                  <FolderTree className="w-9 h-9 text-sky-500/70" />
+                </div>
+                <div className="absolute inset-0 rounded-3xl border border-sky-400/20 animate-ping" style={{ animationDuration: "2.5s" }} />
+              </div>
+              <div className="text-center max-w-sm">
+                <p className="text-base font-bold text-foreground">Explore the Hierarchy</p>
+                <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
+                  Expand any branch to see its properties. Then keep expanding
+                  to drill into zones, sub zones, and base units.
+                </p>
+              </div>
+              {/* hierarchy hint chips */}
+              <div className="flex items-center gap-2 bg-muted/50 rounded-2xl px-5 py-3 border border-border flex-wrap justify-center">
+                {(["branch", "property", "zone", "sub_zone", "base_unit"] as LocationLevel[]).map((lv, i) => {
+                  const m = LEVEL_META[lv];
+                  return (
+                    <span key={lv} className="flex items-center gap-1.5">
+                      {i > 0 && <ChevronRight className="w-3 h-3 text-muted-foreground/30" />}
+                      <span className="flex items-center gap-1 text-xs font-semibold" style={{ color: m.accent }}>
+                        {m.icon} <span className="hidden sm:inline">{m.label}</span>
+                      </span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="anim-fade-slide">
+              {bdSelected.level === "branch" && <BranchDetail name={bdSelected.name} />}
+              {bdSelected.level === "property" && <PropertyDetail name={bdSelected.name} />}
+              {bdSelected.level === "zone" && <ZoneDetail name={bdSelected.name} />}
+              {bdSelected.level === "sub_zone" && <SubZoneDetail name={bdSelected.name} />}
+              {bdSelected.level === "base_unit" && <BaseUnitDetail name={bdSelected.name} />}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+/* ═══════════════════════════════════════════
    MAIN COMPONENT
 ═══════════════════════════════════════════ */
 
@@ -1308,11 +2210,30 @@ export default function Locations() {
   const [zoneFilter, setZoneFilter] = useState("");
   const [subZoneFilter, setSubZoneFilter] = useState("");
   const [showDetailPanel, setShowDetailPanel] = useState(false);
+  const [showBreakdown, setShowBreakdown] = useState(false); // ← breakdown tree view
+
+  /* ── FLAT VIEW FILTER STATE ── */
+  const [filterBranch, setFilterBranch] = useState("");
+  const [filterCity, setFilterCity] = useState("");
+  const [filterPropType, setFilterPropType] = useState("");
+  const [activeFilterDropdown, setActiveFilterDropdown] = useState<string | null>(null);
+  const filterBarRef = useRef<HTMLDivElement>(null);
+
+  /* Close dropdown on outside click */
+  useEffect(() => {
+    if (!activeFilterDropdown) return;
+    const h = (e: MouseEvent) => {
+      if (filterBarRef.current && !filterBarRef.current.contains(e.target as Node))
+        setActiveFilterDropdown(null);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [activeFilterDropdown]);
 
   /* ── DATA FETCHING ── */
   const { data: properties, loading: pLoading, error: pError, refetch: pRefetch } =
     useFrappeList<Property>("Property",
-      ["name", "property_code", "property_name", "property_type", "business_type", "client_name", "area_name", "city_code", "gps_lat", "gps_long", "is_active"],
+      ["name", "property_code", "property_name", "property_type", "business_type", "client_name", "area_name", "branch_code", "branch_name", "city_code", "gps_lat", "gps_long", "is_active"],
       [["is_active", "=", 1]], []);
 
   const { data: zones, loading: zLoading, refetch: zRefetch } =
@@ -1333,7 +2254,16 @@ export default function Locations() {
       subZoneFilter ? [["sub_zone_code", "=", subZoneFilter], ["is_active", "=", 1]] : [["is_active", "=", 1]],
       [subZoneFilter], hierarchyView !== "base_unit");
 
-  const refetchAll = () => { pRefetch(); zRefetch(); szRefetch(); buRefetch(); };
+  /* Branches — needed for filter options in flat view */
+  const { data: viewBranches, refetch: brRefetch } =
+    useFrappeList<Branch>(
+      "Branch",
+      ["name", "branch_code", "branch_name", "city_code", "city_name", "is_active"],
+      [["is_active", "=", 1]],
+      []
+    );
+
+  const refetchAll = () => { pRefetch(); zRefetch(); szRefetch(); buRefetch(); brRefetch(); };
 
   /* ── DERIVED STATE ── */
   const currentList = useMemo<AnyLoc[]>(() =>
@@ -1346,14 +2276,50 @@ export default function Locations() {
 
   const isLoading = hierarchyView === "property" ? pLoading : hierarchyView === "zone" ? zLoading : hierarchyView === "sub_zone" ? szLoading : buLoading;
 
+  /* Derived option lists for filter dropdowns */
+  const filterCityOptions = useMemo(
+    () => Array.from(new Set(properties.map((p) => p.city_code).filter(Boolean))) as string[],
+    [properties]
+  );
+  const filterPropTypeOptions = useMemo(
+    () => Array.from(new Set(properties.map((p) => p.property_type).filter(Boolean))) as string[],
+    [properties]
+  );
+
+  const activeViewFiltersCount = [filterBranch, filterCity, filterPropType].filter(Boolean).length;
+  const clearViewFilters = () => { setFilterBranch(""); setFilterCity(""); setFilterPropType(""); setActiveFilterDropdown(null); };
+
   const filtered = useMemo(() => {
-    if (!search) return currentList;
-    const q = search.toLowerCase();
-    return currentList.filter((item) => {
-      const anyItem = item as AnyLoc & Record<string, any>;
-      return Object.values(anyItem).some((v) => typeof v === "string" && v.toLowerCase().includes(q));
-    });
-  }, [currentList, search]);
+    let list = currentList;
+    /* text search */
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter((item) => {
+        const anyItem = item as AnyLoc & Record<string, any>;
+        return Object.values(anyItem).some((v) => typeof v === "string" && v.toLowerCase().includes(q));
+      });
+    }
+    /* branch filter — applies to all levels (property has branch_code; zone/sub/bu share via property) */
+    if (filterBranch) {
+      list = list.filter((item) => {
+        const p = item as Property;
+        /* For Property level, match directly */
+        if (hierarchyView === "property") return p.branch_code === filterBranch;
+        /* For deeper levels, property_code is available on each item */
+        const propCode = (item as any).property_code;
+        return properties.find((pr) => pr.name === propCode)?.branch_code === filterBranch;
+      });
+    }
+    /* city filter — only meaningful for property view */
+    if (filterCity && hierarchyView === "property") {
+      list = list.filter((item) => (item as Property).city_code === filterCity);
+    }
+    /* property type filter — only meaningful for property view */
+    if (filterPropType && hierarchyView === "property") {
+      list = list.filter((item) => (item as Property).property_type === filterPropType);
+    }
+    return list;
+  }, [currentList, search, filterBranch, filterCity, filterPropType, hierarchyView, properties]);
 
   /* ── HELPERS ── */
   const getItemLabel = (item: AnyLoc): string => {
@@ -1373,7 +2339,7 @@ export default function Locations() {
   const getItemSub = (item: AnyLoc): string => {
     if (hierarchyView === "property") {
       const p = item as Property;
-      return [p.property_type, p.area_name, p.city_code].filter(Boolean).join(" · ");
+      return [p.property_type, p.branch_name || p.area_name, p.city_code].filter(Boolean).join(" · ");
     }
     if (hierarchyView === "zone") {
       const z = item as Zone;
@@ -1408,32 +2374,41 @@ export default function Locations() {
       <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-card shadow-sm">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-foreground tracking-tight">Locations</h1>
-          <div className="flex items-center border border-border rounded-lg overflow-hidden">
-            <button onClick={() => setViewMode("grid")}
-              className={`p-2 transition-colors ${viewMode === "grid" ? "bg-primary text-primary-foreground" : "hover:bg-muted text-muted-foreground"}`}>
-              <Grid3x3 className="w-4 h-4" />
-            </button>
-            <button onClick={() => setViewMode("list")}
-              className={`p-2 transition-colors ${viewMode === "list" ? "bg-primary text-primary-foreground" : "hover:bg-muted text-muted-foreground"}`}>
-              <List className="w-4 h-4" />
-            </button>
-          </div>
+          
+          {/* ★ BREAKDOWN TOGGLE ★ */}
+          <button
+            onClick={() => { setShowBreakdown((v) => !v); setShowNewForm(false); setSelected(null); setShowDetailPanel(false); }}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold border transition-all ${
+              showBreakdown
+                ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                : "border-border text-foreground hover:bg-muted hover:border-primary/40"
+            }`}>
+            <FolderTree className="w-3.5 h-3.5" />
+            Hierarchy 
+            {showBreakdown && (
+              <span className="ml-0.5 w-4 h-4 rounded-full bg-white/20 flex items-center justify-center">
+                <X className="w-2.5 h-2.5" />
+              </span>
+            )}
+          </button>
         </div>
         <div className="flex items-center gap-2.5">
           <button onClick={refetchAll} className="p-2 rounded-lg hover:bg-muted transition-colors" title="Refresh">
             <RefreshCw className={`w-4 h-4 text-muted-foreground ${isLoading ? "animate-spin" : ""}`} />
           </button>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 pr-4 py-2 border border-border rounded-lg text-sm bg-background w-56 focus:outline-none focus:ring-2 focus:ring-ring transition-shadow"
-              placeholder="Search Locations…" />
-            {search && (
-              <button onClick={() => setSearch("")} className="absolute right-2.5 top-1/2 -translate-y-1/2">
-                <X className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-              </button>
-            )}
-          </div>
+          {!showBreakdown && (
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+              <input value={search} onChange={(e) => setSearch(e.target.value)}
+                className="pl-9 pr-4 py-2 border border-border rounded-lg text-sm bg-background w-56 focus:outline-none focus:ring-2 focus:ring-ring transition-shadow"
+                placeholder="Search Locations…" />
+              {search && (
+                <button onClick={() => setSearch("")} className="absolute right-2.5 top-1/2 -translate-y-1/2">
+                  <X className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+                </button>
+              )}
+            </div>
+          )}
           <button onClick={() => { setShowNewForm(true); setSelected(null); setShowDetailPanel(false); }}
             className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-all shadow-sm">
             <Plus className="w-4 h-4" /> New Location
@@ -1441,6 +2416,11 @@ export default function Locations() {
         </div>
       </div>
 
+      {/* ══ BREAKDOWN MODE ══ */}
+      {showBreakdown ? (
+        <LocationBreakdownView properties={properties} loading={pLoading} error={pError} />
+      ) : (
+        <>
       {/* ══ HIERARCHY TABS ══ */}
       <div className="flex items-center gap-1 px-5 py-2.5 border-b border-border bg-card/80">
         <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mr-2">View:</span>
@@ -1481,24 +2461,201 @@ export default function Locations() {
         )}
       </div>
 
-      {/* ══ FILTER CHIPS ══ */}
-      <div className="flex items-center gap-2 px-5 py-2 border-b border-border/60 bg-background">
-        {[
-          { icon: <Users className="w-3 h-3" />, label: "Team" },
-          { icon: <MapPin className="w-3 h-3" />, label: "City" },
-          { icon: <Building2 className="w-3 h-3" />, label: "Property Type" },
-        ].map(({ icon, label }) => (
-          <button key={label}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-border text-xs font-medium text-foreground hover:bg-muted hover:border-primary/30 transition-all">
-            {icon} {label}
+      {/* ══ DYNAMIC FILTER BAR ══ */}
+      <div className="flex items-center gap-2 px-5 py-2 border-b border-border/60 bg-background flex-wrap" ref={filterBarRef}>
+
+        {/* ── Branch filter ── */}
+        {(() => {
+          const key = "branch";
+          const isOpen = activeFilterDropdown === key;
+          const hasVal = !!filterBranch;
+          const accent = LEVEL_META.branch.accent;
+          const label = hasVal ? (viewBranches.find(b => b.name === filterBranch)?.branch_name || filterBranch) : "Branch";
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterDropdown(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all select-none
+                  ${hasVal
+                    ? "text-white shadow-sm"
+                    : "border-border text-foreground hover:bg-muted hover:border-sky-400/40"}`}
+                style={hasVal ? { background: accent, borderColor: accent } : {}}>
+                <Building2 className="w-3.5 h-3.5" />
+                <span className="max-w-[120px] truncate">{label}</span>
+                {hasVal
+                  ? <button onClick={(e) => { e.stopPropagation(); setFilterBranch(""); setActiveFilterDropdown(null); }}
+                      className="hover:opacity-70 ml-0.5 transition-opacity"><X className="w-2.5 h-2.5" /></button>
+                  : <ChevronDown className="w-3 h-3 text-muted-foreground" />}
+              </button>
+              {isOpen && (
+                <div className="absolute top-9 left-0 z-30 bg-card border border-border rounded-xl shadow-xl overflow-hidden min-w-[220px] max-h-60 overflow-y-auto">
+                  <div className="px-3 py-2 border-b border-border/50 bg-muted/20">
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Filter by Branch</p>
+                  </div>
+                  <button onClick={() => { setFilterBranch(""); setActiveFilterDropdown(null); }}
+                    className="w-full text-left px-3 py-2.5 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors flex items-center gap-2">
+                    <span className="w-4 h-4 rounded-full border border-border flex items-center justify-center">
+                      {!filterBranch && <span className="w-2 h-2 rounded-full bg-sky-500" />}
+                    </span>
+                    All Branches
+                  </button>
+                  {viewBranches.map((b) => (
+                    <button key={b.name} onClick={() => { setFilterBranch(b.name); setActiveFilterDropdown(null); }}
+                      className={`w-full text-left px-3 py-2.5 text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between
+                        ${filterBranch === b.name ? "bg-sky-50" : ""}`}>
+                      <span className="flex items-center gap-2">
+                        <span className="w-4 h-4 rounded-full border border-border flex items-center justify-center" style={{ borderColor: filterBranch === b.name ? accent : undefined }}>
+                          {filterBranch === b.name && <span className="w-2 h-2 rounded-full" style={{ background: accent }} />}
+                        </span>
+                        <span className={filterBranch === b.name ? "font-bold" : ""} style={{ color: filterBranch === b.name ? accent : undefined }}>
+                          {b.branch_name}
+                        </span>
+                      </span>
+                      {b.city_name && <span className="text-[9px] text-muted-foreground/60">{b.city_name}</span>}
+                    </button>
+                  ))}
+                  {viewBranches.length === 0 && (
+                    <p className="px-3 py-3 text-xs text-muted-foreground text-center">No branches found</p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ── City filter ── */}
+        {(() => {
+          const key = "city";
+          const isOpen = activeFilterDropdown === key;
+          const hasVal = !!filterCity;
+          const accent = "#0ea5e9";
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterDropdown(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all select-none
+                  ${hasVal ? "text-white shadow-sm" : "border-border text-foreground hover:bg-muted hover:border-sky-300/40"}`}
+                style={hasVal ? { background: accent, borderColor: accent } : {}}>
+                <MapPin className="w-3.5 h-3.5" />
+                <span>{hasVal ? filterCity : "City"}</span>
+                {hasVal
+                  ? <button onClick={(e) => { e.stopPropagation(); setFilterCity(""); setActiveFilterDropdown(null); }}
+                      className="hover:opacity-70 ml-0.5"><X className="w-2.5 h-2.5" /></button>
+                  : <ChevronDown className="w-3 h-3 text-muted-foreground" />}
+              </button>
+              {isOpen && (
+                <div className="absolute top-9 left-0 z-30 bg-card border border-border rounded-xl shadow-xl overflow-hidden min-w-[160px] max-h-56 overflow-y-auto">
+                  <div className="px-3 py-2 border-b border-border/50 bg-muted/20">
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Filter by City</p>
+                  </div>
+                  <button onClick={() => { setFilterCity(""); setActiveFilterDropdown(null); }}
+                    className="w-full text-left px-3 py-2.5 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Cities
+                  </button>
+                  {filterCityOptions.map((c) => (
+                    <button key={c} onClick={() => { setFilterCity(c); setActiveFilterDropdown(null); }}
+                      className={`w-full text-left px-3 py-2.5 text-xs font-medium transition-colors hover:bg-muted flex items-center justify-between
+                        ${filterCity === c ? "bg-sky-50 font-bold" : ""}`}
+                      style={{ color: filterCity === c ? accent : undefined }}>
+                      {c}
+                      {filterCity === c && <ChevronRight className="w-3 h-3" style={{ color: accent }} />}
+                    </button>
+                  ))}
+                  {filterCityOptions.length === 0 && <p className="px-3 py-3 text-xs text-muted-foreground text-center">No data</p>}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ── Property Type filter ── */}
+        {(() => {
+          const key = "proptype";
+          const isOpen = activeFilterDropdown === key;
+          const hasVal = !!filterPropType;
+          const accent = LEVEL_META.property.accent;
+          return (
+            <div className="relative">
+              <button
+                onClick={() => setActiveFilterDropdown(isOpen ? null : key)}
+                className={`flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-full border text-xs font-semibold transition-all select-none
+                  ${hasVal ? "text-white shadow-sm" : "border-border text-foreground hover:bg-muted hover:border-indigo-300/40"}`}
+                style={hasVal ? { background: accent, borderColor: accent } : {}}>
+                <Building2 className="w-3.5 h-3.5" />
+                <span>{hasVal ? filterPropType : "Property Type"}</span>
+                {hasVal
+                  ? <button onClick={(e) => { e.stopPropagation(); setFilterPropType(""); setActiveFilterDropdown(null); }}
+                      className="hover:opacity-70 ml-0.5"><X className="w-2.5 h-2.5" /></button>
+                  : <ChevronDown className="w-3 h-3 text-muted-foreground" />}
+              </button>
+              {isOpen && (
+                <div className="absolute top-9 left-0 z-30 bg-card border border-border rounded-xl shadow-xl overflow-hidden min-w-[180px] max-h-56 overflow-y-auto">
+                  <div className="px-3 py-2 border-b border-border/50 bg-muted/20">
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Filter by Type</p>
+                  </div>
+                  <button onClick={() => { setFilterPropType(""); setActiveFilterDropdown(null); }}
+                    className="w-full text-left px-3 py-2.5 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors">
+                    All Types
+                  </button>
+                  {filterPropTypeOptions.map((t) => {
+                    const tc = PROPERTY_TYPE_COLORS[t] || accent;
+                    return (
+                      <button key={t} onClick={() => { setFilterPropType(t); setActiveFilterDropdown(null); }}
+                        className={`w-full text-left px-3 py-2.5 text-xs font-medium transition-colors hover:bg-muted flex items-center gap-2
+                          ${filterPropType === t ? "font-bold" : ""}`}
+                        style={{ color: filterPropType === t ? tc : undefined }}>
+                        <span>{PROPERTY_TYPE_ICONS[t] || "🏢"}</span>
+                        {t}
+                        {filterPropType === t && <ChevronRight className="w-3 h-3 ml-auto" style={{ color: tc }} />}
+                      </button>
+                    );
+                  })}
+                  {filterPropTypeOptions.length === 0 && <p className="px-3 py-3 text-xs text-muted-foreground text-center">No data</p>}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ── Active filter chips row ── */}
+        {activeViewFiltersCount > 0 && (
+          <div className="h-4 w-px bg-border/50 mx-0.5" />
+        )}
+        {filterBranch && (
+          <span className="inline-flex items-center gap-1 pl-2 pr-1.5 py-0.5 rounded-full text-[10px] font-bold border animate-fade-slide"
+            style={{ color: LEVEL_META.branch.accent, background: `${LEVEL_META.branch.accent}12`, borderColor: `${LEVEL_META.branch.accent}30` }}>
+            {viewBranches.find(b => b.name === filterBranch)?.branch_name || filterBranch}
+            <button onClick={() => setFilterBranch("")} className="hover:opacity-70 transition-opacity"><X className="w-2.5 h-2.5" /></button>
+          </span>
+        )}
+        {filterCity && (
+          <span className="inline-flex items-center gap-1 pl-2 pr-1.5 py-0.5 rounded-full text-[10px] font-bold border border-sky-200 bg-sky-50 text-sky-700">
+            🌆 {filterCity}
+            <button onClick={() => setFilterCity("")} className="hover:opacity-70"><X className="w-2.5 h-2.5" /></button>
+          </span>
+        )}
+        {filterPropType && (
+          <span className="inline-flex items-center gap-1 pl-2 pr-1.5 py-0.5 rounded-full text-[10px] font-bold border animate-fade-slide"
+            style={{ color: PROPERTY_TYPE_COLORS[filterPropType] || LEVEL_META.property.accent, background: `${PROPERTY_TYPE_COLORS[filterPropType] || LEVEL_META.property.accent}12`, borderColor: `${PROPERTY_TYPE_COLORS[filterPropType] || LEVEL_META.property.accent}30` }}>
+            {PROPERTY_TYPE_ICONS[filterPropType] || "🏢"} {filterPropType}
+            <button onClick={() => setFilterPropType("")} className="hover:opacity-70"><X className="w-2.5 h-2.5" /></button>
+          </span>
+        )}
+
+        {activeViewFiltersCount > 0 && (
+          <button onClick={clearViewFilters}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-semibold text-destructive hover:bg-destructive/10 border border-destructive/20 transition-all">
+            <X className="w-2.5 h-2.5" /> Clear
           </button>
-        ))}
-        <button className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-dashed border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:border-primary/40 transition-all">
-          <Plus className="w-3 h-3" /> Add Filter
-        </button>
+        )}
 
         {/* result count */}
-        <div className="ml-auto text-xs text-muted-foreground font-medium">
+        <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground font-medium">
+          {activeViewFiltersCount > 0 && (
+            <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-bold">
+              {filtered.length}/{currentList.length}
+            </span>
+          )}
           {filtered.length} {meta.label}{filtered.length !== 1 ? "s" : ""}
         </div>
       </div>
@@ -1518,24 +2675,77 @@ export default function Locations() {
                   {meta.icon}
                 </div>
                 <p className="text-sm font-semibold text-foreground">No {meta.label}s found</p>
-                {search && <p className="text-xs text-muted-foreground">Try a different search</p>}
+                {(search || activeViewFiltersCount > 0) && (
+                  <button onClick={() => { setSearch(""); clearViewFilters(); }} className="text-xs text-primary hover:underline">Clear filters</button>
+                )}
               </div>
             )}
 
-            {!isLoading && filtered.map((item) => {
+            {/* Property view: group by Branch */}
+            {!isLoading && hierarchyView === "property" && (() => {
+              /* group filtered properties by branch */
+              const grouped: Record<string, { branch: Branch | undefined; props: Property[] }> = {};
+              const NO_BRANCH_KEY = "__none__";
+              (filtered as Property[]).forEach((p) => {
+                const key = p.branch_code || NO_BRANCH_KEY;
+                if (!grouped[key]) {
+                  const br = viewBranches.find((b) => b.name === key);
+                  grouped[key] = { branch: br, props: [] };
+                }
+                grouped[key].props.push(p);
+              });
+
+              return Object.entries(grouped).map(([key, { branch, props }]) => (
+                <div key={key}>
+                  {/* Branch group header */}
+                  <div className="flex items-center gap-2 px-4 py-2 bg-muted/30 border-b border-border/50 sticky top-0 z-10 backdrop-blur-sm">
+                    <div className="w-5 h-5 rounded flex items-center justify-center"
+                      style={{ background: `${LEVEL_META.branch.accent}18`, color: LEVEL_META.branch.accent }}>
+                      <Building2 className="w-3 h-3" />
+                    </div>
+                    <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider flex-1 truncate">
+                      {branch ? branch.branch_name : "No Branch"}
+                    </span>
+                    {branch?.city_name && (
+                      <span className="text-[9px] text-muted-foreground/60 font-medium shrink-0">
+                        🌆 {branch.city_name}
+                      </span>
+                    )}
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0"
+                      style={{ background: `${LEVEL_META.branch.accent}15`, color: LEVEL_META.branch.accent }}>
+                      {props.length}
+                    </span>
+                  </div>
+
+                  {/* Properties under this branch */}
+                  {props.map((p) => {
+                    const isSelected = selected?.name === p.name;
+                    return (
+                      <ListRow
+                        key={p.name}
+                        icon={<span className="text-base">{PROPERTY_TYPE_ICONS[p.property_type || ""] || "🏢"}</span>}
+                        code={p.property_code}
+                        name={p.property_name}
+                        sub={[p.property_type, p.area_name, p.city_code].filter(Boolean).join(" · ")}
+                        active={p.is_active}
+                        selected={isSelected && !showNewForm}
+                        onClick={() => handleSelect(p)}
+                        accentColor={accentColor}
+                      />
+                    );
+                  })}
+                </div>
+              ));
+            })()}
+
+            {/* Zone / Sub Zone / Base Unit: flat list unchanged */}
+            {!isLoading && hierarchyView !== "property" && filtered.map((item) => {
               const anyItem = item as AnyLoc & { name: string; is_active?: 0 | 1 };
               const isSelected = selected?.name === anyItem.name;
               return (
                 <ListRow
                   key={anyItem.name}
-                  icon={
-                    <span className="text-base">
-                      {hierarchyView === "property"
-                        ? PROPERTY_TYPE_ICONS[(item as Property).property_type || ""] || "🏢"
-                        : <span style={{ color: accentColor }}>{meta.icon}</span>
-                      }
-                    </span>
-                  }
+                  icon={<span style={{ color: accentColor }}>{meta.icon}</span>}
                   code={getItemCode(anyItem)}
                   name={getItemLabel(anyItem)}
                   sub={getItemSub(anyItem)}
@@ -1558,8 +2768,25 @@ export default function Locations() {
           ) : hierarchyView === "property" ? (
             /* ── PROPERTY: MAP + floating detail card ── */
             <div className="relative flex-1 overflow-hidden">
+              {/* Branch context banner when filtered */}
+              {filterBranch && (
+                <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 px-4 py-2 rounded-full border shadow-md bg-card/95 backdrop-blur-sm anim-scale">
+                  <div className="w-5 h-5 rounded-md flex items-center justify-center"
+                    style={{ background: `${LEVEL_META.branch.accent}18`, color: LEVEL_META.branch.accent }}>
+                    <Building2 className="w-3 h-3" />
+                  </div>
+                  <span className="text-xs font-bold text-foreground">
+                    {viewBranches.find(b => b.name === filterBranch)?.branch_name || filterBranch}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">— {filtered.length} propert{filtered.length !== 1 ? "ies" : "y"}</span>
+                  <button onClick={() => setFilterBranch("")}
+                    className="ml-1 p-0.5 rounded-full hover:bg-muted transition-colors">
+                    <X className="w-3 h-3 text-muted-foreground" />
+                  </button>
+                </div>
+              )}
               <PropertyMapView
-                properties={properties}
+                properties={filtered as Property[]}
                 selected={selected}
                 onSelect={(p) => {
                   setSelected({ level: "property", name: p.name, label: p.property_name });
@@ -1628,6 +2855,8 @@ export default function Locations() {
           )}
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }
