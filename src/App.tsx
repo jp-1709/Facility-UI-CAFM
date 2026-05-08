@@ -24,37 +24,11 @@ import Locations from "@/pages/Locations";
 // Reports
 import Reporting from "@/pages/Reporting";
 import RequestsReporting from "@/pages/RequestsReporting";
-import TechnicianReporting from "@/pages/TechnicianReporting";
+import Technicians from "@/pages/Scheduling/Technicians";
+import TechnicianReporting from "@/pages/Scheduling/TechnicianReporting";
 import ContractReporting from "@/pages/ContractReporting";
 import AssetReporting from "@/pages/AssetReporting";
 
-// Finance
-import FinancialDashboard from "@/pages/FinancialDashboard";
-import AccountsPayable from "@/pages/AccountsPayable";
-import AccountsReceivable from "@/pages/AccountsReceivable";
-import JournalEntry from "@/pages/JournalEntry";
-import ChartOfAccounts from "@/pages/ChartOfAccounts";
-import GLEntry from "@/pages/GLEntry";
-import BankAccount from "@/pages/BankAccount";
-import BankTransaction from "@/pages/BankTransaction";
-import OpeningBalances from "@/pages/OpeningBalances";
-import PettyCash from "@/pages/FinancialAccounting/PettyCash";
-import TaxConfiguration from "@/pages/finance/TaxConfiguration";
-
-// HR & Payroll
-import HR from "@/pages/HR";
-import StaffManagement from "@/pages/StaffManagement";
-import Payroll from "@/pages/Payroll";
-import Technicians from "@/pages/Technicians";
-
-// Procurement & Inventory
-import PurchaseOrders from "@/pages/PurchaseOrders";
-import Suppliers from "@/pages/Suppliers";
-import GoodsReceipts from "@/pages/GoodsReceipts";
-import InventoryManagement from "@/pages/InventoryManagement";
-import StockTracking from "@/pages/StockTracking";
-import StockTransfers from "@/pages/StockTransfers";
-import SupplierReturns from "@/pages/SupplierReturns";
 
 // F&B / Hospitality
 import Reservations from "@/pages/Reservations";
@@ -121,6 +95,10 @@ const App = () => {
             <Route path="/locations" element={<Locations />} />
           </Route>
 
+          <Route element={<ProtectedRoute module="hr" />}>
+            <Route path="/technicians" element={<Technicians />} />
+          </Route>
+
           {/* ── Reports ─────────────────────────────────────────── */}
           <Route element={<ProtectedRoute module="reports" />}>
             <Route path="/reporting" element={<Reporting />} />
@@ -134,88 +112,8 @@ const App = () => {
             <Route path="/reports/vat-summary" element={<PlaceholderPage title="VAT Summary" />} />
           </Route>
 
-          {/* ── Finance ─────────────────────────────────────────── */}
-          <Route element={<ProtectedRoute module="financial_dashboard" />}>
-            <Route path="/financial-dashboard" element={<FinancialDashboard />} />
-            <Route path="/finance/accounting" element={<FinancialDashboard />} />
-          </Route>
 
-          <Route element={<ProtectedRoute module="accounts_payable" />}>
-            <Route path="/accounts-payable" element={<AccountsPayable />} />
-            <Route path="/finance/accounting/accounts-payable" element={<AccountsPayable />} />
-          </Route>
 
-          <Route element={<ProtectedRoute module="accounts_receivable" />}>
-            <Route path="/accounts-receivable" element={<AccountsReceivable />} />
-            <Route path="/finance/accounting/accounts-receivable" element={<AccountsReceivable />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="journal_entry" />}>
-            <Route path="/journal-entry" element={<JournalEntry />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="chart_of_accounts" />}>
-            <Route path="/chart-of-accounts" element={<ChartOfAccounts />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="gl_entry" />}>
-            <Route path="/gl-entry" element={<GLEntry />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="bank_account" />}>
-            <Route path="/bank-account" element={<BankAccount />} />
-            <Route path="/bank-accounts" element={<BankAccount />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="bank_transaction" />}>
-            <Route path="/bank-transaction" element={<BankTransaction />} />
-            <Route path="/bank-transactions" element={<BankTransaction />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="opening_balances" />}>
-            <Route path="/opening-balances" element={<OpeningBalances />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="petty_cash" />}>
-            <Route path="/petty-cash" element={<PettyCash />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="tax_configuration" />}>
-            <Route path="/tax-configuration" element={<TaxConfiguration />} />
-          </Route>
-
-          <Route path="/finance/accounting/corporate-billing" element={<PlaceholderPage title="Corporate Billing" />} />
-
-          {/* ── HR & Payroll ─────────────────────────────────────── */}
-          <Route element={<ProtectedRoute module="hr" />}>
-            <Route path="/hr" element={<HR />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="staff_management" />}>
-            <Route path="/staff-management" element={<StaffManagement />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="payroll" />}>
-            <Route path="/payroll" element={<Payroll />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="hr" />}>
-            <Route path="/technicians" element={<Technicians />} />
-          </Route>
-
-          {/* ── Procurement & Inventory ─────────────────────────── */}
-          <Route element={<ProtectedRoute />}>
-            {/* Inventory routes use PageLayout directly (no AppSidebar) */}
-            <Route path="/inventory" element={<InventoryManagement />} />
-            <Route path="/categories" element={<CategoriesManagement />} />
-            <Route path="/units" element={<UnitsManagement />} />
-            <Route path="/suppliers" element={<Suppliers />} />
-            <Route path="/purchase-orders" element={<PurchaseOrders />} />
-            <Route path="/goods-receipts" element={<GoodsReceipts />} />
-            <Route path="/stock-tracking" element={<StockTracking />} />
-            <Route path="/stock-transfers" element={<StockTransfers />} />
-            <Route path="/supplier-returns" element={<SupplierReturns />} />
-          </Route>
 
           {/* ── F&B ─────────────────────────────────────────────── */}
           <Route element={<ProtectedRoute module="reservations" />}>
@@ -230,7 +128,6 @@ const App = () => {
             <Route path="/manufacturing" element={<Manufacturing />} />
           </Route>
 
-          {/* ── Admin ───────────────────────────────────────────── */}
           <Route element={<ProtectedRoute module="categories_management" />}>
             <Route path="/categories" element={<CategoriesManagement />} />
           </Route>
@@ -248,11 +145,6 @@ const App = () => {
             <Route path="/teams" element={<UserSetup />} />
           </Route>
 
-          {/* Optional Support pages shared by all */}
-          <Route path="/messages" element={<PlaceholderPage title="Messages" />} />
-          <Route path="/procedures" element={<PlaceholderPage title="Procedure Library" />} />
-          <Route path="/meters" element={<PlaceholderPage title="Meters" />} />
-          <Route path="/vendors" element={<PlaceholderPage title="Vendors" />} />
 
         </Route>
       </Route>
