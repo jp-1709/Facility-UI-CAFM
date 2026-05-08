@@ -14,6 +14,7 @@ import WorkOrders from "@/pages/WorkOrders";
 import Requests from "@/pages/Requests";
 import Assets from "@/pages/Assets";
 import Contracts from "@/pages/Contracts";
+import IotDashboard from "@/pages/IotDashboard";
 
 // Scheduling
 import CalendarView from "@/pages/CalendarView";
@@ -87,6 +88,7 @@ const App = () => {
           {/* ── Core Operations ─────────────────────────────────── */}
           <Route element={<ProtectedRoute module="dashboard" />}>
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/iot-dashboard" element={<IotDashboard />} />
           </Route>
 
           <Route element={<ProtectedRoute module="work_orders" />}>

@@ -14,7 +14,7 @@ import {
   ChevronLeft, ChevronRight, Boxes, ArrowRightLeft, TrendingUp, ShoppingCart,
   DollarSign, UsersRound, Building, Banknote, ArrowUpDown, Receipt,
   Building2, LogOut, ChevronDown, Clock, Wrench, Shield, RefreshCw,
-  Ruler, UserCog, Layers, BookOpen, Landmark, Scale, Wallet
+  Ruler, UserCog, Layers, BookOpen, Landmark, Scale, Wallet, Activity
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -54,6 +54,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     icon: Layers,
     items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, module: "dashboard" },
+      { label: "IoT Dashboard", path: "/iot-dashboard", icon: Activity, module: "dashboard" },
       { label: "Work Orders", path: "/work-orders", icon: ClipboardList, module: "work_orders" },
       { label: "Requests", path: "/requests", icon: Inbox, module: "requests" },
 

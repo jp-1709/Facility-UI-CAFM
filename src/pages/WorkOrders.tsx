@@ -1,5 +1,3 @@
-
-
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -35,7 +33,18 @@ async function frappeGetDoc<T>(doctype: string, name: string): Promise<T> {
 }
 async function frappeCreate<T>(doctype: string, payload: Partial<T>): Promise<T> {
   const r = await fetch(`${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": csrf() }, body: JSON.stringify(payload) });
-  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error((e as { exc_type?: string }).exc_type || "Save failed"); }
+  if (!r.ok) { 
+    const e = await r.json().catch(() => ({})); 
+    let msg = e.exc_type || "Save failed";
+    if (e._server_messages) {
+      try {
+        const messages = JSON.parse(e._server_messages);
+        const detail = JSON.parse(messages[0]);
+        if (detail.message) msg = detail.message;
+      } catch (err) {}
+    }
+    throw new Error(msg);
+  }
   return (await r.json()).data as T;
 }
 async function frappeUpdate<T>(doctype: string, name: string, payload: Partial<T>): Promise<T> {
@@ -45,7 +54,18 @@ async function frappeUpdate<T>(doctype: string, name: string, payload: Partial<T
     headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": csrf() },
     body: JSON.stringify({ doctype, name, fieldname: payload })
   });
-  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error((e as { exc_type?: string }).exc_type || "Update failed"); }
+  if (!r.ok) { 
+    const e = await r.json().catch(() => ({})); 
+    let msg = e.exc_type || "Update failed";
+    if (e._server_messages) {
+      try {
+        const messages = JSON.parse(e._server_messages);
+        const detail = JSON.parse(messages[0]);
+        if (detail.message) msg = detail.message;
+      } catch (err) {}
+    }
+    throw new Error(msg);
+  }
   const resp = await r.json();
   return (resp.message || resp.data || {}) as T;
 }
@@ -71,7 +91,7 @@ interface WOListItem {
   base_unit_code?: string; base_unit_name?: string;
   asset_code?: string; asset_name?: string;
   asset_category?: string; asset_master_category?: string;
-  service_group?: string; fault_category?: string; fault_code?: string;
+  service_group?: string; fault_category?: string; fault_name?: string; fault_code?: string;
   assigned_to?: string; assigned_technician?: string;
   secondary_tech?: string; secondary_technician_name?: string;
   assigned_by?: string; assignment_mode?: string;
@@ -130,14 +150,22 @@ function useDoc<T>(doctype: string, name: string, refreshKey = 0) {
 
 function useSimpleList<T>(doctype: string, fields: string[], filters: FF, skip = false) {
   const [data, setData] = useState<T[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const fetch_ = useCallback(async () => {
     if (skip) return;
-    try { setData(await frappeGet<T>(doctype, fields, filters)); }
-    catch { /* silent */ }
+    try { 
+      const result = await frappeGet<T>(doctype, fields, filters); 
+      setData(result);
+      setError(null);
+    }
+    catch (e: unknown) { 
+      setError((e as Error).message);
+      console.error(`Error fetching ${doctype}:`, e);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doctype, skip, JSON.stringify(filters)]);
   useEffect(() => { fetch_(); }, [fetch_]);
-  return data;
+  return { data, error };
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1180,11 +1208,12 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
             </div>
           </Sec>
 
-          {(wo.service_group || wo.fault_category || wo.fault_code) && (
+          {(wo.service_group || wo.fault_category || wo.fault_name || wo.fault_code) && (
             <Sec id="fault" title="Fault Details">
+              <Row label="Fault Code" val={wo.fault_code} />
               <Row label="Service Group" val={wo.service_group} />
               <Row label="Fault Category" val={wo.fault_category} />
-              <Row label="Fault Code" val={wo.fault_code} />
+              <Row label="Fault Name" val={wo.fault_name} />
               <Row label="Approval Criticality" val={wo.approval_criticality} />
             </Sec>
           )}
@@ -1346,7 +1375,7 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   sub_zone_code: string; sub_zone_name: string;
   base_unit_code: string; base_unit_name: string;
   location_full_path: string;
-  asset_code: string; service_group: string; fault_category: string; fault_code: string;
+  asset_code: string; service_group: string; fault_category: string; fault_name: string; fault_code: string;
   actual_priority: string; approval_criticality: string;
   assigned_to: string; secondary_tech: string;
   schedule_start_date: string; schedule_start_time: string; schedule_end_time: string;
@@ -1364,7 +1393,7 @@ const BLANK_FORM: WOForm = {
   zone_code: "", zone_name: "", sub_zone_code: "", sub_zone_name: "",
   base_unit_code: "", base_unit_name: "",
   location_full_path: "",
-  asset_code: "", service_group: "", fault_category: "", fault_code: "",
+  asset_code: "", service_group: "", fault_category: "", fault_name: "", fault_code: "",
   actual_priority: "", approval_criticality: "",
   assigned_to: "", secondary_tech: "",
   schedule_start_date: "", schedule_start_time: "", schedule_end_time: "",
@@ -1398,7 +1427,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
         base_unit_code: existingDoc.base_unit_code || "", base_unit_name: existingDoc.base_unit_name || "",
         location_full_path: existingDoc.location_full_path || "",
         asset_code: existingDoc.asset_code || "",
-        service_group: existingDoc.service_group || "", fault_category: existingDoc.fault_category || "",
+        service_group: existingDoc.service_group || "", fault_category: existingDoc.fault_category || "", fault_name: existingDoc.fault_name || "",
         actual_priority: existingDoc.actual_priority || "", approval_criticality: existingDoc.approval_criticality || "",
         assigned_to: existingDoc.assigned_to || "", secondary_tech: existingDoc.secondary_tech || "",
         schedule_start_date: existingDoc.schedule_start_date || "", schedule_start_time: existingDoc.schedule_start_time || "",
@@ -1411,19 +1440,89 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
     }
   }, [editName, existingDoc]);
 
-  const clients = useSimpleList<{ name: string; client_name: string }>("Client", ["name", "client_name"], []);
-  const branches = useSimpleList<{ name: string; branch_code: string; branch_name: string }>("Branch", ["name", "branch_code", "branch_name"], [["is_active", "=", 1]]);
-  const properties = useSimpleList<{ name: string; property_code: string; property_name: string }>("Property", ["name", "property_code", "property_name"], 
+  const clientsResult = useSimpleList<{ name: string; client_name: string }>("Client", ["name", "client_name"], []);
+  const branchesResult = useSimpleList<{ name: string; branch_code: string; branch_name: string }>("Branch", ["name", "branch_code", "branch_name"], [["is_active", "=", 1]]);
+  const propertiesResult = useSimpleList<{ name: string; property_code: string; property_name: string }>("Property", ["name", "property_code", "property_name"], 
     form.branch_code ? [["branch_code", "=", form.branch_code], ["is_active", "=", 1]] : [["is_active", "=", 1]]
   );
-  const zones = useSimpleList<{ name: string; zone_code: string; zone_name: string }>("Zone", ["name", "zone_code", "zone_name"], form.property_code ? [["property_code", "=", form.property_code], ["is_active", "=", 1]] : [], !form.property_code);
-  const subZones = useSimpleList<{ name: string; sub_zone_code: string; sub_zone_name: string }>("Sub Zone", ["name", "sub_zone_code", "sub_zone_name"], form.zone_code ? [["zone_code", "=", form.zone_code], ["is_active", "=", 1]] : [], !form.zone_code);
-  const baseUnits = useSimpleList<{ name: string; base_unit_code: string; base_unit_name: string }>("Base Unit", ["name", "base_unit_code", "base_unit_name"], form.sub_zone_code ? [["sub_zone_code", "=", form.sub_zone_code], ["is_active", "=", 1]] : [], !form.sub_zone_code);
-  const assets = useSimpleList<{ name: string; asset_code: string; asset_name: string }>("CFAM Asset", ["name", "asset_code", "asset_name"], form.property_code ? [["property_code", "=", form.property_code], ["asset_status", "=", "Active"]] : [], !form.property_code);
-  const contracts = useSimpleList<{ name: string; contract_title: string }>("FM Contract", ["name", "contract_title"], form.client_code ? [["client_code", "=", form.client_code], ["status", "=", "Active"]] : [], !form.client_code);
-  const technicians = useSimpleList<{ name: string; resource_name: string }>("Resource", ["name", "resource_name"], []);
-  const faultCodes = useSimpleList<{ name: string }>("Fault Code", ["name"], []);
-  const serviceRequests = useSimpleList<{ name: string; sr_number: string; sr_title: string }>("Service Request", ["name", "sr_number", "sr_title"], [["status", "=", "Open"]]);
+  const zonesResult = useSimpleList<{ name: string; zone_code: string; zone_name: string }>("Zone", ["name", "zone_code", "zone_name"], form.property_code ? [["property_code", "=", form.property_code], ["is_active", "=", 1]] : [], !form.property_code);
+  const subZonesResult = useSimpleList<{ name: string; sub_zone_code: string; sub_zone_name: string }>("Sub Zone", ["name", "sub_zone_code", "sub_zone_name"], form.zone_code ? [["zone_code", "=", form.zone_code], ["is_active", "=", 1]] : [], !form.zone_code);
+  const baseUnitsResult = useSimpleList<{ name: string; base_unit_code: string; base_unit_name: string }>("Base Unit", ["name", "base_unit_code", "base_unit_name"], form.sub_zone_code ? [["sub_zone_code", "=", form.sub_zone_code], ["is_active", "=", 1]] : [], !form.sub_zone_code);
+  const assetsResult = useSimpleList<{ name: string; asset_code: string; asset_name: string }>("CFAM Asset", ["name", "asset_code", "asset_name"], form.property_code ? [["property_code", "=", form.property_code], ["asset_status", "=", "Active"]] : [], !form.property_code);
+  const contractsResult = useSimpleList<{ name: string; contract_title: string }>("FM Contract", ["name", "contract_title"], form.client_code ? [["client_code", "=", form.client_code], ["status", "=", "Active"]] : [], !form.client_code);
+  const techniciansResult = useSimpleList<{ name: string; resource_name: string }>("Resource", ["name", "resource_name"], []);
+  const faultCodesResult = useSimpleList<{ name: string; fault_code: string; fault_description: string; service_group: string; fault_category: string; fault_name: string; default_priority: string }>("Fault Code", ["name", "fault_code", "fault_description", "service_group", "fault_category", "fault_name", "default_priority"], [["is_active", "=", 1]]);
+  
+  // Extract data from results
+  const clients = clientsResult.data || [];
+  const branches = branchesResult.data || [];
+  const properties = propertiesResult.data || [];
+  const zones = zonesResult.data || [];
+  const subZones = subZonesResult.data || [];
+  const baseUnits = baseUnitsResult.data || [];
+  const assets = assetsResult.data || [];
+  const contracts = contractsResult.data || [];
+  const technicians = techniciansResult.data || [];
+  const faultCodes = faultCodesResult.data || [];
+  const serviceGroupsResult = useSimpleList<{ name: string; service_group_name: string }>("Service Group", ["name", "service_group_name"], [["is_active", "=", 1]]);
+  const faultCategoriesResult = useSimpleList<{ name: string; fault_category_name: string; service_group: string }>("Fault Category", ["name", "fault_category_name", "service_group"], [["is_active", "=", 1]]);
+  const faultNamesResult = useSimpleList<{ name: string; fault_name_title: string; fault_category: string; service_group: string }>("Fault Name", ["name", "fault_name_title", "fault_category", "service_group"], [["is_active", "=", 1]]);
+  
+  const serviceGroups = serviceGroupsResult.data || [];
+  const faultCategories = faultCategoriesResult.data || [];
+  const faultNames = faultNamesResult.data || [];
+  
+  // Log errors for debugging
+  if (serviceGroupsResult.error) console.error("Service Groups error:", serviceGroupsResult.error);
+  if (faultCategoriesResult.error) console.error("Fault Categories error:", faultCategoriesResult.error);
+  if (faultNamesResult.error) console.error("Fault Names error:", faultNamesResult.error);
+  const serviceRequestsResult = useSimpleList<{ name: string; sr_number: string; sr_title: string }>("Service Request", ["name", "sr_number", "sr_title"], [["status", "=", "Open"]]);
+  const serviceRequests = serviceRequestsResult.data || [];
+
+  // Filter service groups based on selected fault code
+  const serviceGroupsFiltered = (form.fault_code && serviceGroups && faultCodes) ? 
+    (() => {
+      const selectedFaultCode = faultCodes.find(fc => fc.name === form.fault_code);
+      if (selectedFaultCode && selectedFaultCode.service_group) {
+        const sg = serviceGroups.find(s => s.name === selectedFaultCode.service_group);
+        return sg ? [sg] : [];
+      }
+      return serviceGroups;
+    })() : 
+    (serviceGroups || []);
+
+  // Filter fault categories based on selected service group and fault code
+  const faultCategoriesFiltered = (form.service_group && faultCategories) ? 
+    faultCategories.filter(fc => {
+      const matchesSG = fc.service_group === form.service_group;
+      if (form.fault_code) {
+        const selectedFaultCode = faultCodes.find(fcode => fcode.name === form.fault_code);
+        return matchesSG && selectedFaultCode && selectedFaultCode.fault_category === fc.name;
+      }
+      return matchesSG;
+    }) : 
+    (faultCategories || []);
+
+  // Filter fault names based on selected fault category and fault code
+  const faultNamesFiltered = (form.fault_category && faultNames) ? 
+    faultNames.filter(fn => {
+      const matchesFC = fn.fault_category === form.fault_category;
+      if (form.fault_code) {
+        const selectedFaultCode = faultCodes.find(fcode => fcode.name === form.fault_code);
+        return matchesFC && selectedFaultCode && selectedFaultCode.fault_name === fn.name;
+      }
+      return matchesFC;
+    }) : 
+    (faultNames || []);
+
+  // Filter fault codes based on cascade selection (service_group > fault_category > fault_name)
+  const faultCodesFiltered = form.fault_name
+    ? faultCodes.filter(fc => fc.fault_name === form.fault_name)
+    : form.fault_category
+    ? faultCodes.filter(fc => fc.fault_category === form.fault_category)
+    : form.service_group
+    ? faultCodes.filter(fc => fc.service_group === form.service_group)
+    : faultCodes;
 
   /* dynamic path update */
   useEffect(() => {
@@ -1485,6 +1584,36 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
     setForm(f => ({ ...f, sub_zone_code: v, base_unit_code: "" }));
   };
 
+  const handleFaultCodeChange = (v: string) => {
+    if (!v) {
+      setForm(f => ({ ...f, fault_code: "", service_group: "", fault_category: "", fault_name: "" }));
+      return;
+    }
+    const fc = faultCodes.find(x => x.name === v);
+    if (fc) {
+      setForm(f => ({
+        ...f,
+        fault_code: v,
+        service_group: fc.service_group || "",
+        fault_category: fc.fault_category || "",
+        fault_name: fc.fault_name || "",
+        actual_priority: fc.default_priority || f.actual_priority,
+      }));
+    } else {
+      setForm(f => ({ ...f, fault_code: v }));
+    }
+  };
+
+  const handleServiceGroupChange = (v: string) => {
+    setForm(f => ({ ...f, service_group: v, fault_category: "", fault_name: "", fault_code: "" }));
+  };
+  const handleFaultCategoryChange = (v: string) => {
+    setForm(f => ({ ...f, fault_category: v, fault_name: "", fault_code: "" }));
+  };
+  const handleFaultNameChange = (v: string) => {
+    setForm(f => ({ ...f, fault_name: v, fault_code: "" }));
+  };
+
   const toggleDay = (d: number) => {
     const cur = form.schedDays as number[];
     set("schedDays")(cur.includes(d) ? cur.filter(x => x !== d) : [...cur, d]);
@@ -1526,7 +1655,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
         zone_code: form.zone_code || undefined, sub_zone_code: form.sub_zone_code || undefined,
         base_unit_code: form.base_unit_code || undefined, asset_code: form.asset_code || undefined,
         service_group: form.service_group || undefined, fault_category: form.fault_category || undefined,
-        fault_code: form.fault_code || undefined, actual_priority: form.actual_priority,
+        fault_name: form.fault_name || undefined, fault_code: form.fault_code || undefined, actual_priority: form.actual_priority,
         approval_criticality: form.approval_criticality || undefined,
         assigned_to: form.assigned_to || undefined, secondary_tech: form.secondary_tech || undefined,
         schedule_start_date: form.schedule_start_date || undefined,
@@ -1694,6 +1823,66 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
     </div>
   );
 
+  // Searchable select — for Fault Code
+  const SearchSel = ({ label, fk, opts, req, onChangeOverride, placeholder }: {
+    label: string; fk: keyof WOForm; opts: { v: string; l: string }[];
+    req?: boolean; onChangeOverride?: (v: string) => void; placeholder?: string;
+  }) => {
+    const [query, setQuery] = useState("");
+    const [open, setOpen] = useState(false);
+    const dropRef = useRef<HTMLDivElement>(null);
+    const current = String(form[fk]);
+    const currentLabel = opts.find(o => o.v === current)?.l || current || "";
+    const filtered = query
+      ? opts.filter(o => o.l.toLowerCase().includes(query.toLowerCase())).slice(0, 60)
+      : opts.slice(0, 60);
+    useEffect(() => {
+      const h = (e: MouseEvent) => { if (dropRef.current && !dropRef.current.contains(e.target as Node)) setOpen(false); };
+      document.addEventListener("mousedown", h);
+      return () => document.removeEventListener("mousedown", h);
+    }, []);
+    return (
+      <div className="mb-4 relative" ref={dropRef}>
+        <label className="block text-xs font-semibold text-foreground mb-1.5">
+          {label}{req && <span className="text-destructive ml-1">*</span>}
+        </label>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            value={open ? query : currentLabel}
+            onChange={e => { setQuery(e.target.value); setOpen(true); }}
+            onFocus={() => { setQuery(""); setOpen(true); }}
+            placeholder={placeholder || `Search ${label}…`}
+            className="w-full pl-8 pr-8 py-2.5 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          {current && (
+            <button type="button"
+              onClick={() => { onChangeOverride ? onChangeOverride("") : set(fk)(""); setQuery(""); setOpen(false); }}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+        {open && (
+          <div className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-xl max-h-56 overflow-y-auto">
+            {filtered.length === 0
+              ? <div className="px-3 py-3 text-xs text-muted-foreground text-center">No results found</div>
+              : filtered.map(o => (
+                <button key={o.v} type="button"
+                  onClick={() => { onChangeOverride ? onChangeOverride(o.v) : set(fk)(o.v); setOpen(false); setQuery(""); }}
+                  className={`w-full text-left px-3 py-2.5 text-sm hover:bg-muted transition-colors flex items-center justify-between gap-2
+                    ${current === o.v ? "bg-primary/10 text-primary font-semibold" : "text-foreground"}`}>
+                  <span className="truncate">{o.l}</span>
+                  {current === o.v && <Check className="w-3.5 h-3.5 shrink-0" />}
+                </button>
+              ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const STEPS = ["Details", "Location & Asset", "Schedule", "Photos"];
 
   return (
@@ -1778,11 +1967,85 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
           <div className="pt-2">
             <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-4 border-b border-border pb-2">Asset & System</p>
             <Sel label="Asset" fk="asset_code" opts={assets.map(a => ({ v: a.name, l: `${a.asset_code} — ${a.asset_name}` }))} disabled={!form.property_code} />
-            <div className="grid grid-cols-2 gap-4">
-              <Inp label="Service Group" fk="service_group" placeholder="e.g. MEP, Civil, IT" />
-              <Inp label="Fault Category" fk="fault_category" placeholder="e.g. HVAC, Plumbing" />
+
+            {/* ── Fault Selection Group (Cascade: Fault Code > Service Group → Fault Category → Fault Name) ── */}
+            <div className="mt-4 p-4 bg-muted/30 rounded-2xl border border-border space-y-4">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5 border-b border-border pb-2">
+                <Tag className="w-3 h-3" />
+                Fault Selection
+                {(form.fault_code || form.service_group || form.fault_category || form.fault_name) && (
+                  <button type="button"
+                    onClick={() => setForm(f => ({ ...f, fault_code: "", service_group: "", fault_category: "", fault_name: "" }))}
+                    className="ml-auto text-[9px] text-muted-foreground hover:text-destructive flex items-center gap-0.5 font-normal normal-case">
+                    <X className="w-2.5 h-2.5" /> Clear All
+                  </button>
+                )}
+              </p>
+
+              {/* Row 1: Fault Code (Primary search) */}
+              <SearchSel
+                label="Fault Code"
+                fk="fault_code"
+                opts={faultCodesFiltered.map(f => ({ v: f.name, l: `${f.name} — ${f.fault_description || f.name}` }))}
+                onChangeOverride={handleFaultCodeChange}
+                placeholder="Search by code or description…"
+              />
+
+              {/* Row 2: Service Group */}
+              <div className="grid grid-cols-1 gap-0">
+                <Sel
+                  label="Service Group"
+                  fk="service_group"
+                  opts={serviceGroupsFiltered.map(sg => ({ v: sg.name, l: sg.service_group_name }))}
+                  onChangeOverride={handleServiceGroupChange}
+                />
+              </div>
+
+              {/* Row 3: Fault Category */}
+              <div className={`transition-all duration-200 ${form.service_group ? "opacity-100" : "opacity-40 pointer-events-none"}`}>
+                <Sel
+                  label="Fault Category"
+                  fk="fault_category"
+                  opts={faultCategoriesFiltered.map(fc => ({ v: fc.name, l: fc.fault_category_name }))}
+                  disabled={!form.service_group}
+                  onChangeOverride={handleFaultCategoryChange}
+                />
+              </div>
+
+              {/* Row 4: Fault Name */}
+              <div className={`transition-all duration-200 ${form.fault_category ? "opacity-100" : "opacity-40 pointer-events-none"}`}>
+                <Sel
+                  label="Fault Name"
+                  fk="fault_name"
+                  opts={faultNamesFiltered.map(fn => ({ v: fn.name, l: fn.fault_name_title }))}
+                  disabled={!form.fault_category}
+                  onChangeOverride={handleFaultNameChange}
+                />
+              </div>
+
+              {/* Breadcrumb path indicator */}
+              {(form.service_group || form.fault_category || form.fault_name) && (
+                <div className="flex items-center gap-1 flex-wrap pt-1">
+                  {form.service_group && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold">
+                      {serviceGroups.find(sg => sg.name === form.service_group)?.service_group_name || form.service_group}
+                    </span>
+                  )}
+                  {form.fault_category && (
+                    <><ArrowRight className="w-3 h-3 text-muted-foreground" />
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold">
+                      {faultCategories.find(fc => fc.name === form.fault_category)?.fault_category_name || form.fault_category}
+                    </span></>
+                  )}
+                  {form.fault_name && (
+                    <><ArrowRight className="w-3 h-3 text-muted-foreground" />
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">
+                      {faultNames.find(fn => fn.name === form.fault_name)?.fault_name_title || form.fault_name}
+                    </span></>
+                  )}
+                </div>
+              )}
             </div>
-            <Sel label="Fault Code" fk="fault_code" opts={faultCodes.map(f => ({ v: f.name, l: f.name }))} />
           </div>
         </div>
       )}

@@ -20,7 +20,7 @@ import {
   Camera, Paperclip, Users, QrCode, Layers, Home, Globe,
   Map, Navigation, Edit2, MoreVertical, Check, Wifi,
   Phone, User, FileText, Activity, ChevronDown, Maximize2,
-  FolderTree, Minus, MapPin as MapPinIcon, RotateCcw,
+  FolderTree, Minus, RotateCcw,
 } from "lucide-react";
 import { toast as sonnerToast } from "sonner";
 
@@ -235,6 +235,20 @@ async function frappeCreate<T>(doctype: string, payload: Partial<T>): Promise<T>
   return json.data as T;
 }
 
+async function frappeUpdate<T>(doctype: string, name: string, payload: Partial<T>): Promise<T> {
+  const res = await fetch(`${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`, {
+    method: "PUT", credentials: "include",
+    headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": getCsrfToken() },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { exc_type?: string })?.exc_type || `PUT ${doctype}/${name} failed`);
+  }
+  const json = await res.json();
+  return json.data as T;
+}
+
 function getCsrfToken(): string {
   return (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || "";
 }
@@ -303,7 +317,7 @@ function useFrappeDoc<T>(doctype: string, name: string) {
       .catch((e: unknown) => { if (!cancelled) setError((e as Error).message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [doctype, name]);
+  }, [doctype, name, (window as any).__loc_refresh_key]);
 
   return { data, loading, error };
 }
@@ -711,42 +725,132 @@ interface NewLocForm {
   property_code: string; property_type: string; business_type: string;
   gfa_sqm: string; floors: string; city_code: string; area_name: string;
   gps_lat: string; gps_long: string; location_contact: string; contact_phone: string;
-  client_code: string; contract_code: string;
+  client_code: string; contract_code: string; area_code: string;
   zone_code: string; property_link: string; floor_level: string;
   sub_zone_code: string; zone_link: string;
-  base_unit_code: string; sub_zone_link: string; qr_code_ref: string;
-  city_name: string; city_code_field: string; country: string; region: string; time_zone: string;
+  base_unit_code: string; sub_zone_link: string; qr_code_ref: string; qr_code_image: string;
+  city_name: string; city_code_field: string; country: string; country_code: string; region: string; time_zone: string; currency: string;
   area_name_field: string; area_code_field: string; area_group_code: string;
-  // Branch fields
   branch_code_field: string; branch_name_field: string; branch_manager: string; branch_phone: string; branch_address: string;
-  branch_link: string; // used when picking a branch for Area Group / Area
+  region_manager: string;
+  branch_link: string;
 }
 
 const BLANK_LOC: NewLocForm = {
   level: "property", name_field: "", is_active: true,
   property_code: "", property_type: "", business_type: "",
   gfa_sqm: "", floors: "", city_code: "", area_name: "", gps_lat: "", gps_long: "",
-  location_contact: "", contact_phone: "", client_code: "", contract_code: "",
+  location_contact: "", contact_phone: "", client_code: "", contract_code: "", area_code: "",
   zone_code: "", property_link: "", floor_level: "",
   sub_zone_code: "", zone_link: "",
-  base_unit_code: "", sub_zone_link: "", qr_code_ref: "",
-  city_name: "", city_code_field: "", country: "", region: "", time_zone: "",
+  base_unit_code: "", sub_zone_link: "", qr_code_ref: "", qr_code_image: "",
+  city_name: "", city_code_field: "", country: "", country_code: "", region: "", time_zone: "", currency: "",
   area_name_field: "", area_code_field: "", area_group_code: "",
   branch_code_field: "", branch_name_field: "", branch_manager: "", branch_phone: "", branch_address: "",
+  region_manager: "",
   branch_link: "",
 };
 
-function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+/* ── REUSABLE FORM COMPONENTS (Defined outside to fix cursor bug) ── */
+
+interface FInputProps {
+  label: string;
+  fk: keyof NewLocForm;
+  form: NewLocForm;
+  set: (k: keyof NewLocForm) => (v: string | boolean) => void;
+  placeholder?: string;
+  type?: string;
+  required?: boolean;
+}
+
+function FInput({ label, fk, form, set, placeholder, type = "text", required }: FInputProps) {
+  return (
+    <div className="mb-3">
+      <label className="block text-xs font-semibold text-foreground mb-1.5">
+        {label}{required && <span className="text-destructive ml-0.5">*</span>}
+      </label>
+      <input
+        type={type}
+        value={String(form[fk] ?? "")}
+        onChange={(e) => set(fk)(e.target.value)}
+        placeholder={placeholder}
+        className="w-full px-3 py-2 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring transition-shadow"
+      />
+    </div>
+  );
+}
+
+interface FSelectProps {
+  label: string;
+  fk: keyof NewLocForm;
+  form: NewLocForm;
+  set: (k: keyof NewLocForm) => (v: string | boolean) => void;
+  options: { v: string; l: string }[];
+  required?: boolean;
+}
+
+function FSelect({ label, fk, form, set, options, required }: FSelectProps) {
+  return (
+    <div className="mb-3">
+      <label className="block text-xs font-semibold text-foreground mb-1.5">
+        {label}{required && <span className="text-destructive ml-0.5">*</span>}
+      </label>
+      <select
+        value={String(form[fk] ?? "")}
+        onChange={(e) => set(fk)(e.target.value)}
+        className="w-full px-3 py-2 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+      >
+        <option value="">Select…</option>
+        {options.map((o) => (
+          <option key={o.v} value={o.v}>{o.l}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function NewLocationForm({ onClose, onCreated, editData, editLevel }: { onClose: () => void; onCreated: () => void; editData?: any; editLevel?: NewLocLevel }) {
   const [form, setForm] = useState<NewLocForm>(BLANK_LOC);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const set = (k: keyof NewLocForm) => (v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
 
+  const isEdit = !!editData;
+
+  // Initialize form if editing
+  useEffect(() => {
+    if (editData && editLevel) {
+      setForm({
+        ...BLANK_LOC,
+        ...editData,
+        level: editLevel,
+        // map specific fields that might have different names in API vs form state
+        name_field: editData.property_name || editData.zone_name || editData.sub_zone_name || editData.base_unit_name || editData.area_name || editData.area_group_name || editData.branch_name || editData.city_name || "",
+        city_code_field: editData.city_code || "",
+        branch_code_field: editData.branch_code || "",
+        branch_name_field: editData.branch_name || "",
+        area_code_field: editData.area_code || "",
+        area_name_field: editData.area_name || "",
+        property_link: editData.property_code || "",
+        zone_link: editData.zone_code || "",
+        sub_zone_link: editData.sub_zone_code || "",
+        branch_link: editData.branch_code || "",
+        branch_manager: editData.branch_manager || "",
+        branch_phone: editData.phone || "",
+        branch_address: editData.address || "",
+        is_active: editData.is_active === 1,
+      });
+    }
+  }, [editData, editLevel]);
+
+  const { data: countries } = useFrappeList<{ name: string }>("Country", ["name"], [], []);
+  const { data: currencies } = useFrappeList<{ name: string }>("Currency", ["name"], [], []);
   const { data: cities } = useFrappeList<City>("City", ["name", "city_code", "city_name"], [], []);
   const { data: branches } = useFrappeList<Branch>("Branch", ["name", "branch_code", "branch_name", "city_code"], [], []);
-  const branchesFiltered = form.city_code ? branches.filter(b => b.city_code === form.city_code) : branches;
+  const branchesFiltered = (form.city_code && branches) ? branches.filter(b => b.city_code === form.city_code) : (branches || []);
   const { data: areaGroups } = useFrappeList<AreaGroup>("Area Group", ["name", "area_group_code", "area_group_name", "branch_code"], [], []);
-  const areaGroupsFiltered = form.branch_link ? areaGroups.filter(ag => ag.branch_code === form.branch_link) : areaGroups;
+  const areaGroupsFiltered = (form.branch_link && areaGroups) ? areaGroups.filter(ag => ag.branch_code === form.branch_link) : (areaGroups || []);
+  const { data: areas } = useFrappeList<Area>("Area", ["name", "area_code", "area_name"], [], []);
   const { data: properties } = useFrappeList<Property>("Property", ["name", "property_code", "property_name"], [["is_active", "=", 1]], []);
   const { data: zones } = useFrappeList<Zone>("Zone",
     ["name", "zone_code", "zone_name"],
@@ -763,103 +867,114 @@ function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreate
   const handleSubmit = async () => {
     setSaving(true); setSaveError(null);
     try {
+      let payload: any = {};
+      let doctype = "";
+      let docname = editData?.name;
+
       switch (form.level) {
         case "property":
-          await frappeCreate("Property", {
+          doctype = "Property";
+          payload = {
             property_code: form.property_code, property_name: form.name_field,
             property_type: form.property_type, business_type: form.business_type,
             gfa_sqm: form.gfa_sqm ? Number(form.gfa_sqm) : undefined,
             floors: form.floors ? Number(form.floors) : undefined,
+            area_code: form.area_code,
             gps_lat: form.gps_lat ? Number(form.gps_lat) : undefined,
             gps_long: form.gps_long ? Number(form.gps_long) : undefined,
             location_contact: form.location_contact, contact_phone: form.contact_phone,
             client_code: form.client_code, contract_code: form.contract_code || undefined,
             is_active: form.is_active ? 1 : 0,
-          }); break;
+          }; break;
         case "zone":
-          await frappeCreate("Zone", {
+          doctype = "Zone";
+          payload = {
             zone_code: form.zone_code, zone_name: form.name_field,
             property_code: form.property_link, floor_level: form.floor_level,
             business_type: form.business_type, is_active: form.is_active ? 1 : 0,
-          }); break;
+          }; break;
         case "sub_zone":
-          await frappeCreate("Sub Zone", {
+          doctype = "Sub Zone";
+          payload = {
             sub_zone_code: form.sub_zone_code, sub_zone_name: form.name_field,
             zone_code: form.zone_link, is_active: form.is_active ? 1 : 0,
-          }); break;
+          }; break;
         case "base_unit":
-          await frappeCreate("Base Unit", {
+          doctype = "Base Unit";
+          payload = {
             base_unit_code: form.base_unit_code, base_unit_name: form.name_field,
             sub_zone_code: form.sub_zone_link, qr_code_ref: form.qr_code_ref,
             gps_lat: form.gps_lat ? Number(form.gps_lat) : undefined,
             gps_long: form.gps_long ? Number(form.gps_long) : undefined,
             is_active: form.is_active ? 1 : 0,
-          }); break;
+          }; break;
         case "city":
-          await frappeCreate("City", {
+          doctype = "City";
+          payload = {
             city_code: form.city_code_field, city_name: form.city_name,
-            country: form.country, region: form.region, time_zone: form.time_zone,
+            country: form.country, country_code: form.country_code, region: form.region,
+            time_zone: form.time_zone, currency: form.currency,
             is_active: form.is_active ? 1 : 0,
-          }); break;
+          }; break;
         case "area_group":
-          await frappeCreate("Area Group", {
+          doctype = "Area Group";
+          payload = {
             area_group_code: form.area_group_code, area_group_name: form.name_field,
-            branch_code: form.branch_link, region_manager: "", is_active: form.is_active ? 1 : 0,
-          }); break;
+            branch_code: form.branch_link, region_manager: form.region_manager, is_active: form.is_active ? 1 : 0,
+          }; break;
+        case "area":
+          doctype = "Area";
+          payload = {
+            area_code: form.area_code_field, area_name: form.area_name_field,
+            area_group_code: form.area_group_code, city_code: form.city_code,
+            gps_lat: form.gps_lat, gps_long: form.gps_long, is_active: form.is_active ? 1 : 0,
+          }; break;
         case "branch":
-          await frappeCreate("Branch", {
+          doctype = "Branch";
+          payload = {
             branch_code: form.branch_code_field, branch_name: form.branch_name_field,
             city_code: form.city_code, branch_manager: form.branch_manager,
             phone: form.branch_phone, address: form.branch_address,
             is_active: form.is_active ? 1 : 0,
-          }); break;
+          }; break;
       }
 
-      // 🎉 Professional toast notification for location creation
+      if (isEdit) {
+        await frappeUpdate(doctype, docname, payload);
+      } else {
+        await frappeCreate(doctype, payload);
+      }
+
       const levelLabels = {
-        property: "Property",
-        zone: "Zone", 
-        sub_zone: "Sub Zone",
-        base_unit: "Base Unit",
-        city: "City",
-        area_group: "Area Group",
-        branch: "Branch"
+        property: "Property", zone: "Zone", sub_zone: "Sub Zone",
+        base_unit: "Base Unit", city: "City", area_group: "Area Group",
+        branch: "Branch", area: "Area"
       };
 
-      const locationCode = form.level === "property" ? form.property_code :
-                          form.level === "zone" ? form.zone_code :
-                          form.level === "sub_zone" ? form.sub_zone_code :
-                          form.level === "base_unit" ? form.base_unit_code :
-                          form.level === "city" ? form.city_code_field :
-                          form.level === "area_group" ? form.area_group_code :
-                          form.level === "branch" ? form.branch_code_field : "";
+      const locationCode = payload.property_code || payload.zone_code || payload.sub_zone_code ||
+                          payload.base_unit_code || payload.city_code || payload.area_group_code ||
+                          payload.branch_code || payload.area_code || "";
 
       sonnerToast.success(
         <div className="flex items-center gap-4">
           <div className="relative">
             <div className="w-12 h-12 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center border border-white/20">
-              <MapPinIcon className="w-6 h-6 text-white" />
+              <MapPin className="w-6 h-6 text-white" />
             </div>
             <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full animate-pulse border-2 border-white" />
           </div>
           <div className="flex flex-col gap-1">
-            <span className="font-semibold text-base text-white leading-tight">{levelLabels[form.level as keyof typeof levelLabels]} Created</span>
-            <span className="text-sm text-white/80 leading-tight">{locationCode} • Created successfully</span>
+            <span className="font-semibold text-base text-white leading-tight">{levelLabels[form.level as keyof typeof levelLabels]} {isEdit ? "Updated" : "Created"}</span>
+            <span className="text-sm text-white/80 leading-tight">{locationCode} • {isEdit ? "Updated" : "Created"} successfully</span>
           </div>
         </div>,
         {
-          duration: 5000,
-          position: 'top-right',
-          icon: null,
+          duration: 5000, position: 'top-right', icon: null,
           style: {
             background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
-            color: 'white',
-            border: '1px solid rgba(255, 255, 255, 0.1)',
-            borderRadius: '16px',
-            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
-            padding: '24px',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
+            color: 'white', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '16px',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', padding: '24px',
+            backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
           },
           className: 'animate-bounce-in',
         }
@@ -870,36 +985,14 @@ function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreate
     finally { setSaving(false); }
   };
 
-  const FInput = ({ label, fk, placeholder, type = "text", required }: { label: string; fk: keyof NewLocForm; placeholder?: string; type?: string; required?: boolean }) => (
-    <div className="mb-3">
-      <label className="block text-xs font-semibold text-foreground mb-1.5">
-        {label}{required && <span className="text-destructive ml-0.5">*</span>}
-      </label>
-      <input type={type} value={String(form[fk])} onChange={(e) => set(fk)(e.target.value)} placeholder={placeholder}
-        className="w-full px-3 py-2 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring transition-shadow" />
-    </div>
-  );
-
-  const FSelect = ({ label, fk, options, required }: { label: string; fk: keyof NewLocForm; options: { v: string; l: string }[]; required?: boolean }) => (
-    <div className="mb-3">
-      <label className="block text-xs font-semibold text-foreground mb-1.5">
-        {label}{required && <span className="text-destructive ml-0.5">*</span>}
-      </label>
-      <select value={String(form[fk])} onChange={(e) => set(fk)(e.target.value)}
-        className="w-full px-3 py-2 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring">
-        <option value="">Select…</option>
-        {options.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
-      </select>
-    </div>
-  );
 
   return (
     <div className="h-full flex flex-col anim-fade-slide">
       <div className="px-6 pt-6 pb-4 border-b border-border bg-card">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-xl font-bold text-foreground">New Location</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">Add a new location to the hierarchy</p>
+            <h2 className="text-xl font-bold text-foreground">{isEdit ? "Edit" : "New"} Location</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">{isEdit ? "Update existing" : "Add a new"} location to the hierarchy</p>
           </div>
           <button onClick={onClose} className="p-1.5 hover:bg-muted rounded-lg transition-colors"><X className="w-4 h-4" /></button>
         </div>
@@ -907,9 +1000,10 @@ function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreate
           {(["city", "branch", "area_group", "area", "property", "zone", "sub_zone", "base_unit"] as NewLocLevel[]).map((lv) => {
             const m = LEVEL_META[lv as LocationLevel];
             return (
-              <button key={lv} onClick={() => set("level")(lv)}
+              <button key={lv} onClick={() => !isEdit && set("level")(lv)} disabled={isEdit}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border-2 transition-all
-                  ${form.level === lv ? "border-primary bg-primary text-primary-foreground shadow-sm" : "border-border text-foreground hover:border-primary/50 hover:bg-muted"}`}>
+                  ${form.level === lv ? "border-primary bg-primary text-primary-foreground shadow-sm" : "border-border text-foreground hover:border-primary/50 hover:bg-muted"}
+                  ${isEdit && form.level !== lv ? "opacity-40 grayscale" : ""}`}>
                 {m.icon} {m.label}
               </button>
             );
@@ -920,7 +1014,7 @@ function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreate
       <div className="flex-1 overflow-y-auto px-6 py-5 space-y-1">
         {saveError && <ErrorBanner message={saveError} />}
 
-        {form.level !== "city" && (
+        {form.level !== "city" && form.level !== "area" && form.level !== "branch" && (
           <div className="mb-5">
             <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
               {LEVEL_META[form.level as LocationLevel]?.label} Name <span className="text-destructive">*</span>
@@ -939,112 +1033,118 @@ function NewLocationForm({ onClose, onCreated }: { onClose: () => void; onCreate
         {form.level === "city" && (
           <>
             <div className="grid grid-cols-2 gap-3">
-              <FInput label="City Code" fk="city_code_field" placeholder="e.g. MCT" />
-              <FInput label="City Name" fk="city_name" placeholder="e.g. Muscat" required />
+              <FInput label="City Code" fk="city_code_field" form={form} set={set} placeholder="e.g. MCT" />
+              <FInput label="City Name" fk="city_name" form={form} set={set} placeholder="e.g. Muscat" required />
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <FInput label="Country" fk="country" placeholder="e.g. Oman" />
-              <FInput label="Region" fk="region" placeholder="e.g. Middle East" />
+              <FSelect label="Country" fk="country" form={form} set={set} options={countries.map(c => ({ v: c.name, l: c.name }))} />
+              <FInput label="Country Code" fk="country_code" form={form} set={set} placeholder="e.g. OM" />
             </div>
-            <FInput label="Time Zone" fk="time_zone" placeholder="e.g. Asia/Muscat" />
+            <div className="grid grid-cols-2 gap-3">
+              <FInput label="Region" fk="region" form={form} set={set} placeholder="e.g. Middle East" />
+              <FInput label="Time Zone" fk="time_zone" form={form} set={set} placeholder="e.g. Asia/Muscat" />
+            </div>
+            <FSelect label="Currency" fk="currency" form={form} set={set} options={currencies.map(c => ({ v: c.name, l: c.name }))} />
           </>
         )}
 
         {form.level === "branch" && (
           <>
             <div className="grid grid-cols-2 gap-3">
-              <FInput label="Branch Code" fk="branch_code_field" placeholder="e.g. BR-001" required />
-              <FInput label="Branch Name" fk="branch_name_field" placeholder="e.g. South Mumbai" required />
+              <FInput label="Branch Code" fk="branch_code_field" form={form} set={set} placeholder="e.g. BR-001" required />
+              <FInput label="Branch Name" fk="branch_name_field" form={form} set={set} placeholder="e.g. South Mumbai" required />
             </div>
-            <FSelect label="City" fk="city_code" required options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
+            <FSelect label="City" fk="city_code" form={form} set={set} required options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
             <div className="grid grid-cols-2 gap-3">
-              <FInput label="Branch Manager" fk="branch_manager" placeholder="Manager name" />
-              <FInput label="Phone" fk="branch_phone" placeholder="+91 00000 00000" />
+              <FInput label="Branch Manager" fk="branch_manager" form={form} set={set} placeholder="Manager name" />
+              <FInput label="Phone" fk="branch_phone" form={form} set={set} placeholder="+91 00000 00000" />
             </div>
-            <FInput label="Address" fk="branch_address" placeholder="Branch address" />
+            <FInput label="Address" fk="branch_address" form={form} set={set} placeholder="Branch address" />
           </>
         )}
 
         {form.level === "area_group" && (
           <>
-            <FInput label="Area Group Code" fk="area_group_code" placeholder="e.g. AG001" required />
-            <FInput label="Area Group Name" fk="name_field" placeholder="e.g. Commercial District" required />
-            <FSelect label="City (optional)" fk="city_code" options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
-            <FSelect label="Branch" fk="branch_link" required
+            <FInput label="Area Group Code" fk="area_group_code" form={form} set={set} placeholder="e.g. AG001" required />
+            <FInput label="Area Group Name" fk="name_field" form={form} set={set} placeholder="e.g. North Region" required />
+            <FSelect label="Branch" fk="branch_link" form={form} set={set} required
               options={(form.city_code ? branchesFiltered : branches).map((b) => ({ v: b.name, l: `${b.branch_code} — ${b.branch_name}` }))} />
+            <FInput label="Region Manager" fk="region_manager" form={form} set={set} placeholder="Region Manager name" />
           </>
         )}
         {form.level === "area" && (
           <>
-            <FInput label="Area Code" fk="area_code_field" placeholder="e.g. A001" />
-            <FInput label="Area Name" fk="area_name_field" placeholder="e.g. Al Khuwair" required />
-            <FSelect label="City (optional)" fk="city_code" options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
-            <FSelect label="Branch (optional)" fk="branch_link" options={(form.city_code ? branchesFiltered : branches).map((b) => ({ v: b.name, l: `${b.branch_code} — ${b.branch_name}` }))} />
-            <FSelect label="Area Group" fk="area_group_code" required options={areaGroupsFiltered.map((ag) => ({ v: ag.name, l: `${ag.area_group_code} — ${ag.area_group_name}` }))} />
             <div className="grid grid-cols-2 gap-3">
-              <FInput label="GPS Latitude" fk="gps_lat" type="number" placeholder="23.5880" />
-              <FInput label="GPS Longitude" fk="gps_long" type="number" placeholder="58.3829" />
+              <FInput label="Area Code" fk="area_code_field" form={form} set={set} placeholder="e.g. A001" />
+              <FInput label="Area Name" fk="area_name_field" form={form} set={set} placeholder="e.g. Al Khuwair" required />
+            </div>
+            <FSelect label="City (optional)" fk="city_code" form={form} set={set} options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
+            <FSelect label="Area Group" fk="area_group_code" form={form} set={set} required options={areaGroups.map((ag) => ({ v: ag.name, l: `${ag.area_group_code} — ${ag.area_group_name}` }))} />
+            <div className="grid grid-cols-2 gap-3">
+              <FInput label="GPS Latitude" fk="gps_lat" form={form} set={set} type="number" placeholder="23.5880" />
+              <FInput label="GPS Longitude" fk="gps_long" form={form} set={set} type="number" placeholder="58.3829" />
             </div>
           </>
         )}
 
         {form.level === "property" && (
           <>
-            <FInput label="Property Code" fk="property_code" placeholder="e.g. P10001" required />
-            <FSelect label="Property Type" fk="property_type" required
+            <FInput label="Property Code" fk="property_code" form={form} set={set} placeholder="e.g. P10001" required />
+            <FSelect label="Property Type" fk="property_type" form={form} set={set} required
               options={["Headquarters", "Branch", "Data Centre", "Warehouse", "Remote ATM Site", "Office", "ATM Kiosk", "Other"].map((v) => ({ v, l: v }))} />
-            <FSelect label="Business Type" fk="business_type"
+            <FSelect label="Business Type" fk="business_type" form={form} set={set}
               options={["Bank HQ Areas", "Bank Branch Areas", "Bank Staff Areas", "Bank Infrastructure Areas", "Bank ATM Areas", "Data Centre Areas", "Other"].map((v) => ({ v, l: v }))} />
             <div className="grid grid-cols-2 gap-3">
-              <FInput label="GFA (sqm)" fk="gfa_sqm" type="number" placeholder="2400" />
-              <FInput label="Number of Floors" fk="floors" type="number" placeholder="5" />
+              <FInput label="GFA (sqm)" fk="gfa_sqm" form={form} set={set} type="number" placeholder="2400" />
+              <FInput label="Number of Floors" fk="floors" form={form} set={set} type="number" placeholder="5" />
             </div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2 mt-4">Location Hierarchy</p>
-            <FSelect label="City" fk="city_code" options={cities.map((c) => ({ v: c.name, l: `${c.city_code} — ${c.city_name}` }))} />
+            <FSelect label="Area Code" fk="area_code" form={form} set={set} required options={areas.map(a => ({ v: a.name, l: `${a.area_code} — ${a.area_name}` }))} />
+            
             <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2 mt-3">GPS Coordinates</p>
             <div className="grid grid-cols-2 gap-3">
-              <FInput label="Latitude" fk="gps_lat" type="number" placeholder="23.5880" />
-              <FInput label="Longitude" fk="gps_long" type="number" placeholder="58.3829" />
+              <FInput label="Latitude" fk="gps_lat" form={form} set={set} type="number" placeholder="23.5880" />
+              <FInput label="Longitude" fk="gps_long" form={form} set={set} type="number" placeholder="58.3829" />
             </div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2 mt-3">Contact</p>
             <div className="grid grid-cols-2 gap-3">
-              <FInput label="Location Contact" fk="location_contact" placeholder="Contact name" />
-              <FInput label="Phone" fk="contact_phone" placeholder="+968-XXXX-XXXX" type="tel" />
+              <FInput label="Location Contact" fk="location_contact" form={form} set={set} placeholder="Contact name" />
+              <FInput label="Phone" fk="contact_phone" form={form} set={set} placeholder="+968-XXXX-XXXX" type="tel" />
             </div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2 mt-3">Client & Contract</p>
-            <FSelect label="Client" fk="client_code" required options={clients.map((c) => ({ v: c.name, l: c.client_name }))} />
-            <FInput label="Contract Code" fk="contract_code" placeholder="CON-2026-001" />
+            <FSelect label="Client" fk="client_code" form={form} set={set} required options={clients.map((c) => ({ v: c.name, l: c.client_name }))} />
+            <FInput label="Contract Code" fk="contract_code" form={form} set={set} placeholder="CON-2026-001" />
           </>
         )}
 
         {form.level === "zone" && (
           <>
-            <FInput label="Zone Code" fk="zone_code" placeholder="e.g. ZN0001" required />
-            <FSelect label="Property" fk="property_link" required options={properties.map((p) => ({ v: p.name, l: `${p.property_code} — ${p.property_name}` }))} />
-            <FSelect label="Business Type" fk="business_type"
+            <FInput label="Zone Code" fk="zone_code" form={form} set={set} placeholder="e.g. ZN0001" required />
+            <FSelect label="Property" fk="property_link" form={form} set={set} required options={properties.map((p) => ({ v: p.name, l: `${p.property_code} — ${p.property_name}` }))} />
+            <FSelect label="Business Type" fk="business_type" form={form} set={set}
               options={["Bank HQ Areas", "Bank Branch Areas", "Bank Staff Areas", "Bank Infrastructure Areas", "Bank ATM Areas", "Data Centre Areas", "Other"].map((v) => ({ v, l: v }))} />
-            <FInput label="Floor Level" fk="floor_level" placeholder="e.g. G, 1, B1, Roof" />
+            <FInput label="Floor Level" fk="floor_level" form={form} set={set} placeholder="e.g. G, 1, B1, Roof" />
           </>
         )}
 
         {form.level === "sub_zone" && (
           <>
-            <FInput label="Sub Zone Code" fk="sub_zone_code" placeholder="e.g. SZ0001" required />
-            <FSelect label="Property" fk="property_link" options={properties.map((p) => ({ v: p.name, l: `${p.property_code} — ${p.property_name}` }))} />
-            <FSelect label="Zone" fk="zone_link" required options={zones.map((z) => ({ v: z.name, l: `${z.zone_code} — ${z.zone_name}` }))} />
+            <FInput label="Sub Zone Code" fk="sub_zone_code" form={form} set={set} placeholder="e.g. SZ0001" required />
+            <FSelect label="Property" fk="property_link" form={form} set={set} options={properties.map((p) => ({ v: p.name, l: `${p.property_code} — ${p.property_name}` }))} />
+            <FSelect label="Zone" fk="zone_link" form={form} set={set} required options={zones.map((z) => ({ v: z.name, l: `${z.zone_code} — ${z.zone_name}` }))} />
           </>
         )}
 
         {form.level === "base_unit" && (
           <>
-            <FInput label="Base Unit Code" fk="base_unit_code" placeholder="e.g. BU00001" required />
-            <FSelect label="Property" fk="property_link" options={properties.map((p) => ({ v: p.name, l: `${p.property_code} — ${p.property_name}` }))} />
-            <FSelect label="Zone" fk="zone_link" options={zones.map((z) => ({ v: z.name, l: `${z.zone_code} — ${z.zone_name}` }))} />
-            <FSelect label="Sub Zone" fk="sub_zone_link" required options={subZones.map((s) => ({ v: s.name, l: `${s.sub_zone_code} — ${s.sub_zone_name}` }))} />
-            <FInput label="QR Code Reference" fk="qr_code_ref" placeholder="e.g. QR-BU10001" />
+            <FInput label="Base Unit Code" fk="base_unit_code" form={form} set={set} placeholder="e.g. BU00001" required />
+            <FSelect label="Property" fk="property_link" form={form} set={set} options={properties.map((p) => ({ v: p.name, l: `${p.property_code} — ${p.property_name}` }))} />
+            <FSelect label="Zone" fk="zone_link" form={form} set={set} options={zones.map((z) => ({ v: z.name, l: `${z.zone_code} — ${z.zone_name}` }))} />
+            <FSelect label="Sub Zone" fk="sub_zone_link" form={form} set={set} required options={subZones.map((s) => ({ v: s.name, l: `${s.sub_zone_code} — ${s.sub_zone_name}` }))} />
+            <FInput label="QR Code Reference" fk="qr_code_ref" form={form} set={set} placeholder="e.g. QR-BU10001" />
             <div className="grid grid-cols-2 gap-3">
-              <FInput label="GPS Latitude" fk="gps_lat" type="number" placeholder="23.5880" />
-              <FInput label="GPS Longitude" fk="gps_long" type="number" placeholder="58.3829" />
+              <FInput label="GPS Latitude" fk="gps_lat" form={form} set={set} type="number" placeholder="23.5880" />
+              <FInput label="GPS Longitude" fk="gps_long" form={form} set={set} type="number" placeholder="58.3829" />
             </div>
           </>
         )}
@@ -1101,7 +1201,7 @@ function SectionHeader({ title }: { title: string }) {
   return <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2 mt-5 first:mt-0">{title}</p>;
 }
 
-function PropertyDetail({ name, onDrillDown }: { name: string; onDrillDown?: () => void }) {
+function PropertyDetail({ name, onDrillDown, onEdit }: { name: string; onDrillDown?: () => void; onEdit?: (data: Property) => void }) {
   const { data: p, loading, error } = useFrappeDoc<Property>("Property", name);
   if (loading) return <LoadingSpinner />;
   if (error) return <ErrorBanner message={error} />;
@@ -1132,7 +1232,7 @@ function PropertyDetail({ name, onDrillDown }: { name: string; onDrillDown?: () 
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-            <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground border border-border rounded-lg hover:bg-muted transition-colors">
+            <button onClick={() => onEdit?.(p)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground border border-border rounded-lg hover:bg-muted transition-colors">
               <Edit2 className="w-3 h-3" /> Edit
             </button>
             <button className="p-1.5 rounded-lg hover:bg-muted transition-colors">
@@ -1217,7 +1317,7 @@ function PropertyDetail({ name, onDrillDown }: { name: string; onDrillDown?: () 
   );
 }
 
-function ZoneDetail({ name, onDrillDown }: { name: string; onDrillDown?: () => void }) {
+function ZoneDetail({ name, onDrillDown, onEdit }: { name: string; onDrillDown?: () => void; onEdit?: (data: Zone) => void }) {
   const { data: z, loading, error } = useFrappeDoc<Zone>("Zone", name);
   if (loading) return <LoadingSpinner />;
   if (error) return <ErrorBanner message={error} />;
@@ -1237,7 +1337,7 @@ function ZoneDetail({ name, onDrillDown }: { name: string; onDrillDown?: () => v
             </div>
           </div>
         </div>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-border rounded-lg hover:bg-muted transition-colors">
+        <button onClick={() => onEdit?.(z)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-border rounded-lg hover:bg-muted transition-colors">
           <Edit2 className="w-3 h-3" /> Edit
         </button>
       </div>
@@ -1255,7 +1355,7 @@ function ZoneDetail({ name, onDrillDown }: { name: string; onDrillDown?: () => v
   );
 }
 
-function SubZoneDetail({ name, onDrillDown }: { name: string; onDrillDown?: () => void }) {
+function SubZoneDetail({ name, onDrillDown, onEdit }: { name: string; onDrillDown?: () => void; onEdit?: (data: SubZone) => void }) {
   const { data: s, loading, error } = useFrappeDoc<SubZone>("Sub Zone", name);
   if (loading) return <LoadingSpinner />;
   if (error) return <ErrorBanner message={error} />;
@@ -1275,7 +1375,7 @@ function SubZoneDetail({ name, onDrillDown }: { name: string; onDrillDown?: () =
             </div>
           </div>
         </div>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-border rounded-lg hover:bg-muted transition-colors">
+        <button onClick={() => onEdit?.(s)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-border rounded-lg hover:bg-muted transition-colors">
           <Edit2 className="w-3 h-3" /> Edit
         </button>
       </div>
@@ -1293,7 +1393,7 @@ function SubZoneDetail({ name, onDrillDown }: { name: string; onDrillDown?: () =
   );
 }
 
-function BaseUnitDetail({ name }: { name: string }) {
+function BaseUnitDetail({ name, onEdit }: { name: string; onEdit?: (data: BaseUnit) => void }) {
   const { data: b, loading, error } = useFrappeDoc<BaseUnit>("Base Unit", name);
   if (loading) return <LoadingSpinner />;
   if (error) return <ErrorBanner message={error} />;
@@ -1314,7 +1414,7 @@ function BaseUnitDetail({ name }: { name: string }) {
             </div>
           </div>
         </div>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-border rounded-lg hover:bg-muted transition-colors">
+        <button onClick={() => onEdit?.(b)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-border rounded-lg hover:bg-muted transition-colors">
           <Edit2 className="w-3 h-3" /> Edit
         </button>
       </div>
@@ -1355,8 +1455,8 @@ function BaseUnitDetail({ name }: { name: string }) {
    CARD GRID OVERVIEW PANEL
 ═══════════════════════════════════════════ */
 
-type HierarchyView = "property" | "zone" | "sub_zone" | "base_unit";
-type AnyLoc = Property | Zone | SubZone | BaseUnit;
+type HierarchyView = "city" | "branch" | "area_group" | "area" | "property" | "zone" | "sub_zone" | "base_unit";
+type AnyLoc = City | Branch | AreaGroup | Area | Property | Zone | SubZone | BaseUnit;
 
 interface CardGridOverviewProps {
   items: AnyLoc[];
@@ -1369,20 +1469,44 @@ function CardGridOverview({ items, level, selected, onSelect }: CardGridOverview
   const meta = LEVEL_META[level as LocationLevel];
 
   const getCode = (item: AnyLoc) => {
+    if (level === "city") return (item as City).city_code;
+    if (level === "branch") return (item as Branch).branch_code;
+    if (level === "area_group") return (item as AreaGroup).area_group_code;
+    if (level === "area") return (item as Area).area_code || "";
+    if (level === "property") return (item as Property).property_code;
     if (level === "zone") return (item as Zone).zone_code;
     if (level === "sub_zone") return (item as SubZone).sub_zone_code;
     return (item as BaseUnit).base_unit_code;
   };
   const getName = (item: AnyLoc) => {
+    if (level === "city") return (item as City).city_name;
+    if (level === "branch") return (item as Branch).branch_name;
+    if (level === "area_group") return (item as AreaGroup).area_group_name;
+    if (level === "area") return (item as Area).area_name;
+    if (level === "property") return (item as Property).property_name;
     if (level === "zone") return (item as Zone).zone_name;
     if (level === "sub_zone") return (item as SubZone).sub_zone_name;
     return (item as BaseUnit).base_unit_name;
   };
   const getSub = (item: AnyLoc) => {
-    if (level === "zone") return (item as Zone).property_name || (item as Zone).property_code;
-    if (level === "sub_zone") return (item as SubZone).zone_name || (item as SubZone).zone_code;
+    if (level === "city") return (item as City).country || "";
+    if (level === "branch") return (item as Branch).city_name || (item as Branch).city_code || "";
+    if (level === "area_group") return (item as AreaGroup).branch_code || "";
+    if (level === "area") return (item as Area).area_group_code || "";
+    if (level === "property") {
+      const p = item as Property;
+      return [p.property_type, p.branch_name || p.area_name, p.city_code].filter(Boolean).join(" · ");
+    }
+    if (level === "zone") {
+      const z = item as Zone;
+      return [z.property_name || z.property_code, z.floor_level ? `Floor ${z.floor_level}` : ""].filter(Boolean).join(" · ");
+    }
+    if (level === "sub_zone") {
+      const sz = item as SubZone;
+      return sz.zone_name || sz.zone_code || "";
+    }
     const b = item as BaseUnit;
-    return b.sub_zone_name || b.sub_zone_code;
+    return b.sub_zone_name || b.sub_zone_code || "";
   };
   const getBadge = (item: AnyLoc) => {
     if (level === "zone") return (item as Zone).floor_level ? `Floor ${(item as Zone).floor_level}` : undefined;
@@ -1432,7 +1556,7 @@ function CardGridOverview({ items, level, selected, onSelect }: CardGridOverview
 /* ═══════════════════════════════════════════
    BRANCH DETAIL PANEL
 ═══════════════════════════════════════════ */
-function BranchDetail({ name }: { name: string }) {
+function BranchDetail({ name, onEdit }: { name: string; onEdit?: (data: Branch) => void }) {
   const { data: b, loading, error } = useFrappeDoc<Branch>("Branch", name);
   if (loading) return (
     <div className="flex items-center justify-center py-16">
@@ -1472,7 +1596,7 @@ function BranchDetail({ name }: { name: string }) {
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-            <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground border border-border rounded-lg hover:bg-muted transition-colors">
+            <button onClick={() => onEdit?.(b)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground border border-border rounded-lg hover:bg-muted transition-colors">
               <Edit2 className="w-3 h-3" /> Edit
             </button>
             <button className="p-1.5 rounded-lg hover:bg-muted transition-colors">
@@ -1528,9 +1652,101 @@ function BranchDetail({ name }: { name: string }) {
   );
 }
 
-/* ═══════════════════════════════════════════
-   COUNT BADGE
-═══════════════════════════════════════════ */
+function CityDetail({ name, onEdit }: { name: string; onEdit?: (data: City) => void }) {
+  const { data: c, loading, error } = useFrappeDoc<City>("City", name);
+  if (loading) return <LoadingSpinner />;
+  if (error) return <ErrorBanner message={error} />;
+  if (!c) return null;
+  const accent = LEVEL_META.city.accent;
+  return (
+    <div className="anim-fade-slide px-6 py-6">
+      <div className="flex items-start justify-between mb-5">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl flex items-center justify-center text-xl" style={{ background: `${accent}18` }}>🌆</div>
+          <div>
+            <h2 className="text-xl font-bold text-foreground">{c.city_name}</h2>
+            <div className="flex items-center gap-2 mt-1">
+              <LevelBadge level="city" />
+              <code className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{c.city_code}</code>
+              <ActivePill active={c.is_active} />
+            </div>
+          </div>
+        </div>
+        <button onClick={() => onEdit?.(c)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-border rounded-lg hover:bg-muted transition-colors">
+          <Edit2 className="w-3 h-3" /> Edit
+        </button>
+      </div>
+      <div className="bg-muted/20 rounded-xl border border-border/60 px-4 divide-y divide-border/40">
+        <InfoRow icon={<Globe className="w-3.5 h-3.5" />} label="Country" value={c.country} />
+        <InfoRow icon={<Map className="w-3.5 h-3.5" />} label="Region" value={c.region} />
+      </div>
+    </div>
+  );
+}
+
+function AreaGroupDetail({ name, onEdit }: { name: string; onEdit?: (data: AreaGroup) => void }) {
+  const { data: ag, loading, error } = useFrappeDoc<AreaGroup>("Area Group", name);
+  if (loading) return <LoadingSpinner />;
+  if (error) return <ErrorBanner message={error} />;
+  if (!ag) return null;
+  const accent = LEVEL_META.area_group.accent;
+  return (
+    <div className="anim-fade-slide px-6 py-6">
+      <div className="flex items-start justify-between mb-5">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl flex items-center justify-center text-xl" style={{ background: `${accent}18` }}>📁</div>
+          <div>
+            <h2 className="text-xl font-bold text-foreground">{ag.area_group_name}</h2>
+            <div className="flex items-center gap-2 mt-1">
+              <LevelBadge level="area_group" />
+              <code className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{ag.area_group_code}</code>
+              <ActivePill active={ag.is_active} />
+            </div>
+          </div>
+        </div>
+        <button onClick={() => onEdit?.(ag)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-border rounded-lg hover:bg-muted transition-colors">
+          <Edit2 className="w-3 h-3" /> Edit
+        </button>
+      </div>
+      <div className="bg-muted/20 rounded-xl border border-border/60 px-4 divide-y divide-border/40">
+        <InfoRow icon={<Building2 className="w-3.5 h-3.5" />} label="Branch" value={ag.branch_code} />
+      </div>
+    </div>
+  );
+}
+
+function AreaDetail({ name, onEdit }: { name: string; onEdit?: (data: Area) => void }) {
+  const { data: a, loading, error } = useFrappeDoc<Area>("Area", name);
+  if (loading) return <LoadingSpinner />;
+  if (error) return <ErrorBanner message={error} />;
+  if (!a) return null;
+  const accent = LEVEL_META.area.accent;
+  return (
+    <div className="anim-fade-slide px-6 py-6">
+      <div className="flex items-start justify-between mb-5">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl flex items-center justify-center text-xl" style={{ background: `${accent}18` }}>📍</div>
+          <div>
+            <h2 className="text-xl font-bold text-foreground">{a.area_name}</h2>
+            <div className="flex items-center gap-2 mt-1">
+              <LevelBadge level="area" />
+              <code className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{a.area_code}</code>
+              <ActivePill active={a.is_active} />
+            </div>
+          </div>
+        </div>
+        <button onClick={() => onEdit?.(a)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-border rounded-lg hover:bg-muted transition-colors">
+          <Edit2 className="w-3 h-3" /> Edit
+        </button>
+      </div>
+      <div className="bg-muted/20 rounded-xl border border-border/60 px-4 divide-y divide-border/40">
+        <InfoRow icon={<FolderTree className="w-3.5 h-3.5" />} label="Area Group" value={a.area_group_code} />
+        <InfoRow icon={<Globe className="w-3.5 h-3.5" />} label="City" value={a.city_code} />
+      </div>
+    </div>
+  );
+}
+
 function CountBadge({ count, color, label }: { count: number; color: string; label: string }) {
   return (
     <span className="bd-badge inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold whitespace-nowrap"
@@ -2009,8 +2225,8 @@ function BranchNode({
 interface BdSelected { level: LocationLevel; name: string; label: string; }
 
 function LocationBreakdownView({
-  properties, loading: propLoading, error: propError,
-}: { properties: Property[]; loading: boolean; error: string | null }) {
+  properties, loading: propLoading, error: propError, onEdit
+}: { properties: Property[]; loading: boolean; error: string | null; onEdit: (level: NewLocLevel, data: any) => void }) {
   const [bdSearch, setBdSearch] = useState("");
   const [bdSelected, setBdSelected] = useState<BdSelected | null>(null);
   const [breadcrumb, setBreadcrumb] = useState<BreadcrumbPath>({});
@@ -2182,11 +2398,11 @@ function LocationBreakdownView({
             </div>
           ) : (
             <div className="anim-fade-slide">
-              {bdSelected.level === "branch" && <BranchDetail name={bdSelected.name} />}
-              {bdSelected.level === "property" && <PropertyDetail name={bdSelected.name} />}
-              {bdSelected.level === "zone" && <ZoneDetail name={bdSelected.name} />}
-              {bdSelected.level === "sub_zone" && <SubZoneDetail name={bdSelected.name} />}
-              {bdSelected.level === "base_unit" && <BaseUnitDetail name={bdSelected.name} />}
+              {bdSelected.level === "branch" && <BranchDetail name={bdSelected.name} onEdit={(data) => onEdit("branch", data)} />}
+              {bdSelected.level === "property" && <PropertyDetail name={bdSelected.name} onEdit={(data) => onEdit("property", data)} />}
+              {bdSelected.level === "zone" && <ZoneDetail name={bdSelected.name} onEdit={(data) => onEdit("zone", data)} />}
+              {bdSelected.level === "sub_zone" && <SubZoneDetail name={bdSelected.name} onEdit={(data) => onEdit("sub_zone", data)} />}
+              {bdSelected.level === "base_unit" && <BaseUnitDetail name={bdSelected.name} onEdit={(data) => onEdit("base_unit", data)} />}
             </div>
           )}
         </div>
@@ -2211,6 +2427,9 @@ export default function Locations() {
   const [subZoneFilter, setSubZoneFilter] = useState("");
   const [showDetailPanel, setShowDetailPanel] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false); // ← breakdown tree view
+
+  const [editData, setEditData] = useState<any>(null);
+  const [editLevel, setEditLevel] = useState<NewLocLevel | null>(null);
 
   /* ── FLAT VIEW FILTER STATE ── */
   const [filterBranch, setFilterBranch] = useState("");
@@ -2254,8 +2473,16 @@ export default function Locations() {
       subZoneFilter ? [["sub_zone_code", "=", subZoneFilter], ["is_active", "=", 1]] : [["is_active", "=", 1]],
       [subZoneFilter], hierarchyView !== "base_unit");
 
-  /* Branches — needed for filter options in flat view */
-  const { data: viewBranches, refetch: brRefetch } =
+  const { data: cities, loading: cLoading, refetch: cRefetch } =
+    useFrappeList<City>("City", ["name", "city_code", "city_name", "country", "region", "is_active"], [["is_active", "=", 1]], [], hierarchyView !== "city");
+
+  const { data: areaGroups, loading: agLoading, refetch: agRefetch } =
+    useFrappeList<AreaGroup>("Area Group", ["name", "area_group_code", "area_group_name", "branch_link", "is_active"], [["is_active", "=", 1]], [], hierarchyView !== "area_group");
+
+  const { data: areas, loading: aLoading, refetch: aRefetch } =
+    useFrappeList<Area>("Area", ["name", "area_code", "area_name", "area_group_code", "city_code", "is_active"], [["is_active", "=", 1]], [], hierarchyView !== "area");
+
+  const { data: viewBranches, loading: bLoading, refetch: bRefetch } =
     useFrappeList<Branch>(
       "Branch",
       ["name", "branch_code", "branch_name", "city_code", "city_name", "is_active"],
@@ -2263,18 +2490,33 @@ export default function Locations() {
       []
     );
 
-  const refetchAll = () => { pRefetch(); zRefetch(); szRefetch(); buRefetch(); brRefetch(); };
+  const refetchAll = () => {
+    pRefetch(); zRefetch(); szRefetch(); buRefetch();
+    cRefetch(); agRefetch(); aRefetch(); bRefetch();
+    (window as any).__loc_refresh_key = ((window as any).__loc_refresh_key || 0) + 1;
+  };
 
   /* ── DERIVED STATE ── */
   const currentList = useMemo<AnyLoc[]>(() =>
-    hierarchyView === "property" ? properties
-      : hierarchyView === "zone" ? zones
-        : hierarchyView === "sub_zone" ? subZones
-          : baseUnits,
-    [hierarchyView, properties, zones, subZones, baseUnits]
+    hierarchyView === "city" ? cities
+      : hierarchyView === "branch" ? viewBranches
+        : hierarchyView === "area_group" ? areaGroups
+          : hierarchyView === "area" ? areas
+            : hierarchyView === "property" ? properties
+              : hierarchyView === "zone" ? zones
+                : hierarchyView === "sub_zone" ? subZones
+                  : baseUnits,
+    [hierarchyView, cities, viewBranches, areaGroups, areas, properties, zones, subZones, baseUnits]
   );
 
-  const isLoading = hierarchyView === "property" ? pLoading : hierarchyView === "zone" ? zLoading : hierarchyView === "sub_zone" ? szLoading : buLoading;
+  const isLoading = hierarchyView === "city" ? cLoading
+    : hierarchyView === "branch" ? bLoading
+      : hierarchyView === "area_group" ? agLoading
+        : hierarchyView === "area" ? aLoading
+          : hierarchyView === "property" ? pLoading
+            : hierarchyView === "zone" ? zLoading
+              : hierarchyView === "sub_zone" ? szLoading
+                : buLoading;
 
   /* Derived option lists for filter dropdowns */
   const filterCityOptions = useMemo(
@@ -2323,6 +2565,10 @@ export default function Locations() {
 
   /* ── HELPERS ── */
   const getItemLabel = (item: AnyLoc): string => {
+    if (hierarchyView === "city") return (item as City).city_name;
+    if (hierarchyView === "branch") return (item as Branch).branch_name;
+    if (hierarchyView === "area_group") return (item as AreaGroup).area_group_name;
+    if (hierarchyView === "area") return (item as Area).area_name;
     if (hierarchyView === "property") return (item as Property).property_name;
     if (hierarchyView === "zone") return (item as Zone).zone_name;
     if (hierarchyView === "sub_zone") return (item as SubZone).sub_zone_name;
@@ -2330,6 +2576,10 @@ export default function Locations() {
   };
 
   const getItemCode = (item: AnyLoc): string => {
+    if (hierarchyView === "city") return (item as City).city_code;
+    if (hierarchyView === "branch") return (item as Branch).branch_code;
+    if (hierarchyView === "area_group") return (item as AreaGroup).area_group_code;
+    if (hierarchyView === "area") return (item as Area).area_code;
     if (hierarchyView === "property") return (item as Property).property_code;
     if (hierarchyView === "zone") return (item as Zone).zone_code;
     if (hierarchyView === "sub_zone") return (item as SubZone).sub_zone_code;
@@ -2337,6 +2587,10 @@ export default function Locations() {
   };
 
   const getItemSub = (item: AnyLoc): string => {
+    if (hierarchyView === "city") return (item as City).country || "";
+    if (hierarchyView === "branch") return (item as Branch).city_name || (item as Branch).city_code || "";
+    if (hierarchyView === "area_group") return (item as AreaGroup).branch_code || "";
+    if (hierarchyView === "area") return (item as Area).area_group_code || "";
     if (hierarchyView === "property") {
       const p = item as Property;
       return [p.property_type, p.branch_name || p.area_name, p.city_code].filter(Boolean).join(" · ");
@@ -2418,19 +2672,20 @@ export default function Locations() {
 
       {/* ══ BREAKDOWN MODE ══ */}
       {showBreakdown ? (
-        <LocationBreakdownView properties={properties} loading={pLoading} error={pError} />
+        <LocationBreakdownView properties={properties || []} loading={pLoading} error={pError || null} 
+              onEdit={(lv, data) => { setEditData(data); setEditLevel(lv); setShowNewForm(true); }} />
       ) : (
         <>
       {/* ══ HIERARCHY TABS ══ */}
       <div className="flex items-center gap-1 px-5 py-2.5 border-b border-border bg-card/80">
         <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mr-2">View:</span>
-        {(["property", "zone", "sub_zone", "base_unit"] as HierarchyView[]).map((lv) => {
+        {(["city", "branch", "area_group", "area", "property", "zone", "sub_zone", "base_unit"] as HierarchyView[]).map((lv) => {
           const m = LEVEL_META[lv as LocationLevel];
           const isActive = hierarchyView === lv;
           return (
             <button key={lv}
               onClick={() => { setHierarchyView(lv); setSelected(null); setShowDetailPanel(false); }}
-              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
                 ${isActive ? "text-white shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
               style={isActive ? { background: m.accent } : {}}>
               {m.icon} {m.label}
@@ -2763,7 +3018,12 @@ export default function Locations() {
         <div className="flex-1 overflow-hidden flex flex-col bg-background">
           {showNewForm ? (
             <div className="flex-1 overflow-y-auto">
-              <NewLocationForm onClose={() => setShowNewForm(false)} onCreated={() => { setShowNewForm(false); refetchAll(); }} />
+              <NewLocationForm 
+                onClose={() => { setShowNewForm(false); setEditData(null); setEditLevel(null); }} 
+                onCreated={() => { setShowNewForm(false); setEditData(null); setEditLevel(null); refetchAll(); }} 
+                editData={editData}
+                editLevel={editLevel || undefined}
+              />
             </div>
           ) : hierarchyView === "property" ? (
             /* ── PROPERTY: MAP + floating detail card ── */
@@ -2806,7 +3066,8 @@ export default function Locations() {
                   </div>
                   <div className="flex-1 overflow-y-auto">
                     <PropertyDetail name={selected.name}
-                      onDrillDown={() => { setHierarchyView("zone"); setShowDetailPanel(false); setSelected(null); }} />
+                      onDrillDown={() => { setHierarchyView("zone"); setShowDetailPanel(false); setSelected(null); }}
+                      onEdit={(data) => { setEditData(data); setEditLevel("property"); setShowNewForm(true); }} />
                   </div>
                 </div>
               )}
@@ -2840,15 +3101,22 @@ export default function Locations() {
                     </button>
                   </div>
 
+                  {selected.level === "city" && <CityDetail name={selected.name} onEdit={(data) => { setEditData(data); setEditLevel("city"); setShowNewForm(true); }} />}
+                  {selected.level === "branch" && <BranchDetail name={selected.name} onEdit={(data) => { setEditData(data); setEditLevel("branch"); setShowNewForm(true); }} />}
+                  {selected.level === "area_group" && <AreaGroupDetail name={selected.name} onEdit={(data) => { setEditData(data); setEditLevel("area_group"); setShowNewForm(true); }} />}
+                  {selected.level === "area" && <AreaDetail name={selected.name} onEdit={(data) => { setEditData(data); setEditLevel("area"); setShowNewForm(true); }} />}
+                  {selected.level === "property" && <PropertyDetail name={selected.name} onEdit={(data) => { setEditData(data); setEditLevel("property"); setShowNewForm(true); }} />}
                   {selected.level === "zone" && (
                     <ZoneDetail name={selected.name}
-                      onDrillDown={() => { setHierarchyView("sub_zone"); setShowDetailPanel(false); setSelected(null); }} />
+                      onDrillDown={() => { setHierarchyView("sub_zone"); setShowDetailPanel(false); setSelected(null); }}
+                      onEdit={(data) => { setEditData(data); setEditLevel("zone"); setShowNewForm(true); }} />
                   )}
                   {selected.level === "sub_zone" && (
                     <SubZoneDetail name={selected.name}
-                      onDrillDown={() => { setHierarchyView("base_unit"); setShowDetailPanel(false); setSelected(null); }} />
+                      onDrillDown={() => { setHierarchyView("base_unit"); setShowDetailPanel(false); setSelected(null); }}
+                      onEdit={(data) => { setEditData(data); setEditLevel("sub_zone"); setShowNewForm(true); }} />
                   )}
-                  {selected.level === "base_unit" && <BaseUnitDetail name={selected.name} />}
+                  {selected.level === "base_unit" && <BaseUnitDetail name={selected.name} onEdit={(data) => { setEditData(data); setEditLevel("base_unit"); setShowNewForm(true); }} />}
                 </div>
               )}
             </div>

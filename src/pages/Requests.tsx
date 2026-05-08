@@ -1302,9 +1302,12 @@ function RequestForm({
   );
   const { data: contracts } = useFrappeList<{ name: string; contract_title: string }>(
     "FM Contract", ["name", "contract_title"],
-    form.client_code ? [["client_code", "=", form.client_code], ["status", "=", "Active"]] : [["status", "=", "Active"]],
+    form.client_code ? [["client_code", "=", form.client_code]] : [],
     [form.client_code]
   );
+
+  // Debug: Log contracts data to help diagnose empty dropdown
+  console.log("Contracts data:", contracts, "Client code:", form.client_code);
   const { data: branches } = useFrappeList<{ name: string; branch_name: string; branch_code: string }>(
     "Branch", ["name", "branch_name", "branch_code"], [["is_active", "=", "1"]], []
   );
@@ -1322,36 +1325,44 @@ function RequestForm({
       ...(form.property_code ? [["property_code", "=", form.property_code] as [string, string, string]] : []),
       ["is_active", "=", "1"],
     ],
-    [form.property_code],
-    !form.property_code
+    [form.property_code]
   );
+
+  // Debug: Log zones data to help diagnose empty dropdown
+  console.log("Zones data:", zones, "Property code:", form.property_code);
   const { data: subZones } = useFrappeList<{ name: string; sub_zone_name: string; sub_zone_code: string }>(
     "Sub Zone", ["name", "sub_zone_name", "sub_zone_code"],
     [
       ...(form.zone_code ? [["zone_code", "=", form.zone_code] as [string, string, string]] : []),
       ["is_active", "=", "1"],
     ],
-    [form.zone_code],
-    !form.zone_code
+    [form.zone_code]
   );
+
+  // Debug: Log sub-zones data to help diagnose empty dropdown
+  console.log("Sub-zones data:", subZones, "Zone code:", form.zone_code);
   const { data: baseUnits } = useFrappeList<{ name: string; base_unit_name: string; base_unit_code: string }>(
     "Base Unit", ["name", "base_unit_name", "base_unit_code"],
     [
       ...(form.sub_zone_code ? [["sub_zone_code", "=", form.sub_zone_code] as [string, string, string]] : []),
       ["is_active", "=", "1"],
     ],
-    [form.sub_zone_code],
-    !form.sub_zone_code
+    [form.sub_zone_code]
   );
+
+  // Debug: Log base units data to help diagnose empty dropdown
+  console.log("Base units data:", baseUnits, "Sub-zone code:", form.sub_zone_code);
   const { data: assets } = useFrappeList<{ name: string; asset_name: string; asset_code: string }>(
     "CFAM Asset", ["name", "asset_code", "asset_name"],
     [
       ...(form.property_code ? [["property_code", "=", form.property_code] as [string, string, string]] : []),
       ["asset_status", "=", "Active"],
     ],
-    [form.property_code],
-    !form.property_code
+    [form.property_code]
   );
+
+  // Debug: Log assets data to help diagnose empty dropdown
+  console.log("Assets data:", assets, "Property code:", form.property_code);
   const { data: faultCodes } = useFrappeList<{ name: string }>(
     "Fault Code", ["name"], [], []
   );
@@ -1443,8 +1454,8 @@ function RequestForm({
   };
 
   const handleSubmit = async () => {
-    if (!form.sr_title || !form.client_code || !form.property_code || !form.priority_actual || !form.wo_source) {
-      setSaveError("Please fill all required fields (Title, Client, Property, Priority, Request Mode).");
+    if (!form.sr_title || !form.client_code || !form.contract_code || !form.property_code || !form.priority_actual || !form.wo_source) {
+      setSaveError("Please fill all required fields (Title, Client, Contract, Property, Priority, Request Mode).");
       return;
     }
     setSaving(true);
@@ -1688,6 +1699,7 @@ function RequestForm({
                 label="Contract" value={form.contract_code} onChange={set("contract_code")}
                 options={toOpts(contracts as { name: string; label?: string }[], "contract_title")}
                 disabled={!form.client_code}
+                required
               />
             </div>
             <div className="grid grid-cols-2 gap-4">
