@@ -60,7 +60,9 @@ export type ModuleKey =
   | "reservations"
   | "recipe_management"
   | "user_setup"
-  | "manufacturing";
+  | "manufacturing"
+  | "iot_dashboard"
+  | "clients";
 
 // ─── Frappe role names (exact strings) ──────────────────────────────────────
 export type CafmRole =
@@ -78,9 +80,12 @@ export type CafmRole =
   | "Client Admin"
   | "Client User"
   | "Vendor Contractor"
+  | "Asset Manager"
   // Frappe built-in roles that may also be present
   | "System Manager"
-  | "Administrator";
+  | "Administrator"
+  | "Admin"
+  | "System Administrator";
 
 // ─── Per-role module access matrix ──────────────────────────────────────────
 /**
@@ -94,7 +99,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
 > = {
   // ── System / built-in ────────────────────────────────────────────────────
   "System Manager": {
-    dashboard: "full", work_orders: "full", requests: "full", assets: "full",
+    dashboard: "full", iot_dashboard: "full", work_orders: "full", requests: "full", assets: "full",
     contracts: "full", calendar: "full", scheduler: "full", locations: "full",
     reports: "full", financial_dashboard: "full", accounts_payable: "full",
     accounts_receivable: "full", journal_entry: "full", chart_of_accounts: "full",
@@ -106,11 +111,11 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     supplier_returns: "full", categories_management: "full", units_management: "full",
     workspace_management: "full", menu_management: "full", table_setup: "full",
     reservations: "full", recipe_management: "full", user_setup: "full",
-    manufacturing: "full",
+    manufacturing: "full", clients: "full",
   },
 
   "Administrator": {
-    dashboard: "full", work_orders: "full", requests: "full", assets: "full",
+    dashboard: "full", iot_dashboard: "full", work_orders: "full", requests: "full", assets: "full",
     contracts: "full", calendar: "full", scheduler: "full", locations: "full",
     reports: "full", financial_dashboard: "full", accounts_payable: "full",
     accounts_receivable: "full", journal_entry: "full", chart_of_accounts: "full",
@@ -122,12 +127,44 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     supplier_returns: "full", categories_management: "full", units_management: "full",
     workspace_management: "full", menu_management: "full", table_setup: "full",
     reservations: "full", recipe_management: "full", user_setup: "full",
-    manufacturing: "full",
+    manufacturing: "full", clients: "full",
+  },
+
+  "Admin": {
+    dashboard: "full", iot_dashboard: "full", work_orders: "full", requests: "full", assets: "full",
+    contracts: "full", calendar: "full", scheduler: "full", locations: "full",
+    reports: "full", financial_dashboard: "full", accounts_payable: "full",
+    accounts_receivable: "full", journal_entry: "full", chart_of_accounts: "full",
+    gl_entry: "full", bank_account: "full", bank_transaction: "full",
+    opening_balances: "full", petty_cash: "full", tax_configuration: "full",
+    payroll: "full", hr: "full", staff_management: "full",
+    purchase_orders: "full", suppliers: "full", goods_receipts: "full",
+    inventory_management: "full", stock_tracking: "full", stock_transfers: "full",
+    supplier_returns: "full", categories_management: "full", units_management: "full",
+    workspace_management: "full", menu_management: "full", table_setup: "full",
+    reservations: "full", recipe_management: "full", user_setup: "full",
+    manufacturing: "full", clients: "full",
+  },
+
+  "System Administrator": {
+    dashboard: "full", iot_dashboard: "full", work_orders: "full", requests: "full", assets: "full",
+    contracts: "full", calendar: "full", scheduler: "full", locations: "full",
+    reports: "full", financial_dashboard: "full", accounts_payable: "full",
+    accounts_receivable: "full", journal_entry: "full", chart_of_accounts: "full",
+    gl_entry: "full", bank_account: "full", bank_transaction: "full",
+    opening_balances: "full", petty_cash: "full", tax_configuration: "full",
+    payroll: "full", hr: "full", staff_management: "full",
+    purchase_orders: "full", suppliers: "full", goods_receipts: "full",
+    inventory_management: "full", stock_tracking: "full", stock_transfers: "full",
+    supplier_returns: "full", categories_management: "full", units_management: "full",
+    workspace_management: "full", menu_management: "full", table_setup: "full",
+    reservations: "full", recipe_management: "full", user_setup: "full",
+    manufacturing: "full", clients: "full",
   },
 
   // ── Super Admin — Full access to everything ───────────────────────────────
   "Super Admin": {
-    dashboard: "full", work_orders: "full", requests: "full", assets: "full",
+    dashboard: "full", iot_dashboard: "full", work_orders: "full", requests: "full", assets: "full",
     contracts: "full", calendar: "full", scheduler: "full", locations: "full",
     reports: "full", financial_dashboard: "full", accounts_payable: "full",
     accounts_receivable: "full", journal_entry: "full", chart_of_accounts: "full",
@@ -139,7 +176,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     supplier_returns: "full", categories_management: "full", units_management: "full",
     workspace_management: "full", menu_management: "full", table_setup: "full",
     reservations: "full", recipe_management: "full", user_setup: "full",
-    manufacturing: "full",
+    manufacturing: "full", clients: "full",
   },
 
   // ── Management / Director — Read ops, full reporting, no user admin ───────
@@ -152,7 +189,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     payroll: "read", hr: "read", staff_management: "read",
     purchase_orders: "read", suppliers: "read", goods_receipts: "read",
     inventory_management: "read", stock_tracking: "read",
-    user_setup: "none",
+    user_setup: "none", clients: "read",
   },
 
   // ── Head Operations — Full ops, limited billing ───────────────────────────
@@ -164,6 +201,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     purchase_orders: "limited", suppliers: "limited", goods_receipts: "limited",
     inventory_management: "limited", stock_tracking: "read",
     payroll: "none", user_setup: "none", tax_configuration: "none",
+    clients: "full",
   },
 
   // ── Branch Manager — Branch-scoped full ops ───────────────────────────────
@@ -174,7 +212,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     accounts_receivable: "none", hr: "read", staff_management: "full",
     purchase_orders: "limited", suppliers: "limited", goods_receipts: "limited",
     inventory_management: "limited", stock_tracking: "limited",
-    payroll: "none", user_setup: "none",
+    payroll: "none", user_setup: "none", clients: "full",
   },
 
   // ── Regional Manager — Multi-branch oversight ─────────────────────────────
@@ -184,7 +222,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     reports: "limited", financial_dashboard: "none", hr: "read",
     staff_management: "limited", purchase_orders: "limited", suppliers: "limited",
     goods_receipts: "limited", inventory_management: "read", stock_tracking: "read",
-    payroll: "none", user_setup: "none",
+    payroll: "none", user_setup: "none", clients: "full",
   },
 
   // ── Site Manager — PM schedules, vendors, attendance ─────────────────────
@@ -195,7 +233,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     staff_management: "limited", purchase_orders: "limited", suppliers: "limited",
     goods_receipts: "limited", inventory_management: "limited",
     payroll: "none", user_setup: "none", accounts_payable: "none",
-    accounts_receivable: "none",
+    accounts_receivable: "none", clients: "full",
   },
 
   // ── Supervisor — Assign tasks, checklists ─────────────────────────────────
@@ -204,8 +242,9 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     assets: "read", calendar: "read", scheduler: "limited", locations: "read",
     reports: "limited", financial_dashboard: "none",
     inventory_management: "read", stock_tracking: "read",
+    hr: "limited",
     payroll: "none", user_setup: "none", contracts: "none",
-    accounts_payable: "none", accounts_receivable: "none",
+    accounts_payable: "none", accounts_receivable: "none", clients: "read",
   },
 
   // ── Technician — Own jobs, photos, closure ────────────────────────────────
@@ -215,7 +254,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     reports: "none", financial_dashboard: "none", contracts: "none",
     payroll: "none", user_setup: "none", accounts_payable: "none",
     accounts_receivable: "none", hr: "none", staff_management: "none",
-    purchase_orders: "none", suppliers: "none",
+    purchase_orders: "none", suppliers: "none", clients: "read",
   },
 
   // ── Finance Executive — Invoices, expenses, margin ───────────────────────
@@ -229,7 +268,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     requests: "read", assets: "read", purchase_orders: "read",
     suppliers: "read", goods_receipts: "read",
     payroll: "limited", hr: "read",
-    user_setup: "none", scheduler: "none",
+    user_setup: "none", scheduler: "none", clients: "read",
   },
 
   // ── Stores / Purchase — PO, GRN, stock ────────────────────────────────────
@@ -240,7 +279,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     work_orders: "limited", requests: "read", assets: "read",
     reports: "limited", financial_dashboard: "none",
     payroll: "none", user_setup: "none", contracts: "none",
-    accounts_payable: "read", accounts_receivable: "none",
+    accounts_payable: "read", accounts_receivable: "none", clients: "read",
   },
 
   // ── Helpdesk — Ticket logging, updates ────────────────────────────────────
@@ -250,7 +289,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     reports: "limited", financial_dashboard: "none",
     contracts: "none", payroll: "none", user_setup: "none",
     accounts_payable: "none", accounts_receivable: "none",
-    hr: "none", staff_management: "none",
+    hr: "none", staff_management: "none", clients: "read",
   },
 
   // ── Client Admin — Own data, raise/view WOs, invoice view ────────────────
@@ -260,7 +299,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     reports: "limited", accounts_receivable: "read",
     financial_dashboard: "none", payroll: "none", user_setup: "none",
     scheduler: "none", hr: "none", staff_management: "none",
-    accounts_payable: "none",
+    accounts_payable: "none", clients: "read",
   },
 
   // ── Client User — Raise own requests, track complaints ───────────────────
@@ -270,7 +309,7 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     financial_dashboard: "none", payroll: "none", user_setup: "none",
     scheduler: "none", contracts: "none", hr: "none",
     staff_management: "none", accounts_payable: "none",
-    accounts_receivable: "none",
+    accounts_receivable: "none", clients: "read",
   },
 
   // ── Vendor / Contractor — Assigned jobs, submit bills ────────────────────
@@ -279,7 +318,17 @@ export const ROLE_MODULE_PERMISSIONS: Record<
     assets: "read", calendar: "read", reports: "limited",
     financial_dashboard: "none", payroll: "none", user_setup: "none",
     scheduler: "none", contracts: "none", accounts_payable: "limited",
-    accounts_receivable: "none", hr: "none", staff_management: "none",
+    accounts_receivable: "none", hr: "none", staff_management: "none", clients: "read",
+  },
+
+  "Asset Manager": {
+    assets: "full",
+    work_orders: "read",
+    requests: "read",
+    locations: "full",
+    contracts: "read",
+    dashboard: "read",
+    clients: "full",
   },
 };
 

@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
+import { usePermissions } from "@/hooks/usePermissions";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   Search, Plus, Filter, MapPin, ChevronDown, ChevronUp, ChevronRight,
   MoreVertical, Pencil, X, Loader2, AlertCircle, RefreshCw,
@@ -33,15 +35,15 @@ async function frappeGetDoc<T>(doctype: string, name: string): Promise<T> {
 }
 async function frappeCreate<T>(doctype: string, payload: Partial<T>): Promise<T> {
   const r = await fetch(`${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": csrf() }, body: JSON.stringify(payload) });
-  if (!r.ok) { 
-    const e = await r.json().catch(() => ({})); 
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
     let msg = e.exc_type || "Save failed";
     if (e._server_messages) {
       try {
         const messages = JSON.parse(e._server_messages);
         const detail = JSON.parse(messages[0]);
         if (detail.message) msg = detail.message;
-      } catch (err) {}
+      } catch (err) { /* ignore parse error */ }
     }
     throw new Error(msg);
   }
@@ -54,15 +56,15 @@ async function frappeUpdate<T>(doctype: string, name: string, payload: Partial<T
     headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": csrf() },
     body: JSON.stringify({ doctype, name, fieldname: payload })
   });
-  if (!r.ok) { 
-    const e = await r.json().catch(() => ({})); 
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
     let msg = e.exc_type || "Update failed";
     if (e._server_messages) {
       try {
         const messages = JSON.parse(e._server_messages);
         const detail = JSON.parse(messages[0]);
         if (detail.message) msg = detail.message;
-      } catch (err) {}
+      } catch (err) { /* ignore parse error */ }
     }
     throw new Error(msg);
   }
@@ -153,12 +155,12 @@ function useSimpleList<T>(doctype: string, fields: string[], filters: FF, skip =
   const [error, setError] = useState<string | null>(null);
   const fetch_ = useCallback(async () => {
     if (skip) return;
-    try { 
-      const result = await frappeGet<T>(doctype, fields, filters); 
+    try {
+      const result = await frappeGet<T>(doctype, fields, filters);
       setData(result);
       setError(null);
     }
-    catch (e: unknown) { 
+    catch (e: unknown) {
       setError((e as Error).message);
       console.error(`Error fetching ${doctype}:`, e);
     }
@@ -230,18 +232,18 @@ interface DueDateInfo {
 function calculateDueDateInfo(wo: WOListItem): DueDateInfo {
   const now = new Date();
   const completedOrClosed = wo.status === "Completed" || wo.status === "Closed" || wo.status === "Cancelled";
-  
+
   // Priority 1: Resolution SLA Target (most critical for completion)
   if (wo.resolution_sla_target && !completedOrClosed) {
     const resolutionDate = new Date(wo.resolution_sla_target);
     const isOverdue = resolutionDate < now;
     const hoursDiff = (resolutionDate.getTime() - now.getTime()) / (1000 * 60 * 60);
-    
+
     let urgencyLevel: DueDateInfo['urgencyLevel'] = 'normal';
     if (isOverdue) urgencyLevel = 'critical';
     else if (hoursDiff <= 24) urgencyLevel = 'high';
     else if (hoursDiff <= 72) urgencyLevel = 'medium';
-    
+
     return {
       isOverdue,
       dueDate: wo.resolution_sla_target,
@@ -250,18 +252,18 @@ function calculateDueDateInfo(wo: WOListItem): DueDateInfo {
       urgencyLevel
     };
   }
-  
+
   // Priority 2: Response SLA Target (critical for initial response)
   if (wo.response_sla_target && !completedOrClosed && wo.status === "Open") {
     const responseDate = new Date(wo.response_sla_target);
     const isOverdue = responseDate < now;
     const hoursDiff = (responseDate.getTime() - now.getTime()) / (1000 * 60 * 60);
-    
+
     let urgencyLevel: DueDateInfo['urgencyLevel'] = 'normal';
     if (isOverdue) urgencyLevel = 'critical';
     else if (hoursDiff <= 4) urgencyLevel = 'high'; // Response SLAs are typically shorter
     else if (hoursDiff <= 12) urgencyLevel = 'medium';
-    
+
     return {
       isOverdue,
       dueDate: wo.response_sla_target,
@@ -270,17 +272,17 @@ function calculateDueDateInfo(wo: WOListItem): DueDateInfo {
       urgencyLevel
     };
   }
-  
+
   // Priority 3: Scheduled Start Date (for planned work)
   if (wo.schedule_start_date && !completedOrClosed) {
     const scheduleDate = new Date(wo.schedule_start_date + (wo.schedule_start_time ? ' ' + wo.schedule_start_time : ''));
     const isOverdue = scheduleDate < now;
     const hoursDiff = (scheduleDate.getTime() - now.getTime()) / (1000 * 60 * 60);
-    
+
     let urgencyLevel: DueDateInfo['urgencyLevel'] = 'normal';
     if (isOverdue) urgencyLevel = 'high'; // Overdue schedule is less critical than SLA breach
     else if (hoursDiff <= 24) urgencyLevel = 'medium';
-    
+
     return {
       isOverdue,
       dueDate: wo.schedule_start_date + (wo.schedule_start_time ? ' ' + wo.schedule_start_time : ''),
@@ -289,7 +291,7 @@ function calculateDueDateInfo(wo: WOListItem): DueDateInfo {
       urgencyLevel
     };
   }
-  
+
   // No due date applicable
   return {
     isOverdue: false,
@@ -597,7 +599,11 @@ function PrintModal({ wo, onClose }: { wo: WOListItem; onClose: () => void }) {
   function toggle(id: PrintSectionId) {
     setSelected(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }
@@ -925,14 +931,13 @@ function WOCard({ wo, selected, onClick }: { wo: WOListItem; selected: boolean; 
         <span className="text-[11px] text-muted-foreground font-mono">#{wo.wo_number || wo.name}</span>
         <div className="flex items-center gap-1 flex-wrap justify-end">
           {dueDateInfo.isOverdue && (
-            <span className={`px-2 py-0.5 rounded text-[10px] font-bold text-white ${
-              dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-600' : 
-              dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' : 
-              'bg-amber-500'
-            }`}>
-              {dueDateInfo.dueType === 'resolution_sla' ? 'SLA Overdue' : 
-               dueDateInfo.dueType === 'response_sla' ? 'Response Overdue' : 
-               'Overdue'}
+            <span className={`px-2 py-0.5 rounded text-[10px] font-bold text-white ${dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-600' :
+              dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' :
+                'bg-amber-500'
+              }`}>
+              {dueDateInfo.dueType === 'resolution_sla' ? 'SLA Overdue' :
+                dueDateInfo.dueType === 'response_sla' ? 'Response Overdue' :
+                  'Overdue'}
             </span>
           )}
           <PriBadge pri={wo.actual_priority} />
@@ -977,9 +982,9 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
   const handleStatusChange = async (newStatus: string) => {
     if (!wo) return;
     setUpdatingStatus(true);
-    try { 
-      await frappeUpdate("Work Orders", woName, { status: newStatus }); 
-      
+    try {
+      await frappeUpdate("Work Orders", woName, { status: newStatus });
+
       // 🎯 Status change toast notification
       const statusConfig = STATUS_CFG[newStatus] || STATUS_CFG["Draft"];
       sonnerToast.success(
@@ -1012,8 +1017,8 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
           className: 'animate-slide-in-right',
         }
       );
-      
-      onStatusChange(); 
+
+      onStatusChange();
     }
     catch { /* silent */ }
     finally { setUpdatingStatus(false); }
@@ -1110,12 +1115,11 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
           <div className="grid grid-cols-2 gap-6 pb-5 border-b border-border mb-2">
             <div>
               <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Due Date</p>
-              <p className={`text-sm font-semibold ${
-                dueDateInfo.urgencyLevel === 'critical' ? 'text-red-500' : 
-                dueDateInfo.urgencyLevel === 'high' ? 'text-orange-500' : 
-                dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-500' : 
-                'text-foreground'
-              }`}>
+              <p className={`text-sm font-semibold ${dueDateInfo.urgencyLevel === 'critical' ? 'text-red-500' :
+                dueDateInfo.urgencyLevel === 'high' ? 'text-orange-500' :
+                  dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-500' :
+                    'text-foreground'
+                }`}>
                 {dueDateInfo.dueDate ? (
                   <>
                     {dueDateInfo.dueType === 'schedule' && wo.schedule_start_date && (
@@ -1133,11 +1137,10 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
               <div className="flex items-center gap-2 mt-1">
                 <span className="text-xs text-muted-foreground">{dueDateInfo.dueDateLabel}</span>
                 {dueDateInfo.isOverdue && (
-                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold text-white ${
-                    dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-500' : 
-                    dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' : 
-                    'bg-amber-500'
-                  }`}>
+                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold text-white ${dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-500' :
+                    dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' :
+                      'bg-amber-500'
+                    }`}>
                     OVERDUE
                   </span>
                 )}
@@ -1240,30 +1243,27 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
 
           <Sec id="sla" title="SLA & Schedule Tracking">
             {/* Primary Due Date Summary */}
-            <div className={`rounded-xl p-4 border mb-4 ${
-              dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-50 border-red-200' : 
-              dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-50 border-orange-200' : 
-              dueDateInfo.urgencyLevel === 'medium' ? 'bg-amber-50 border-amber-200' : 
-              'bg-muted/40 border-border'
-            }`}>
+            <div className={`rounded-xl p-4 border mb-4 ${dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-50 border-red-200' :
+              dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-50 border-orange-200' :
+                dueDateInfo.urgencyLevel === 'medium' ? 'bg-amber-50 border-amber-200' :
+                  'bg-muted/40 border-border'
+              }`}>
               <div className="flex items-center justify-between mb-2">
                 <p className="text-sm font-bold text-foreground">{dueDateInfo.dueDateLabel}</p>
                 {dueDateInfo.isOverdue && (
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold text-white ${
-                    dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-500' : 
-                    dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' : 
-                    'bg-amber-500'
-                  }`}>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold text-white ${dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-500' :
+                    dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' :
+                      'bg-amber-500'
+                    }`}>
                     OVERDUE
                   </span>
                 )}
               </div>
-              <p className={`text-lg font-semibold mb-1 ${
-                dueDateInfo.urgencyLevel === 'critical' ? 'text-red-600' : 
-                dueDateInfo.urgencyLevel === 'high' ? 'text-orange-600' : 
-                dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-600' : 
-                'text-foreground'
-              }`}>
+              <p className={`text-lg font-semibold mb-1 ${dueDateInfo.urgencyLevel === 'critical' ? 'text-red-600' :
+                dueDateInfo.urgencyLevel === 'high' ? 'text-orange-600' :
+                  dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-600' :
+                    'text-foreground'
+                }`}>
                 {dueDateInfo.dueDate ? (
                   dueDateInfo.dueType === 'schedule' && wo.schedule_start_date ? (
                     formatDate(wo.schedule_start_date) + (wo.schedule_start_time ? " " + wo.schedule_start_time : "")
@@ -1275,20 +1275,19 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
                 )}
               </p>
               <p className="text-xs text-muted-foreground">
-                {dueDateInfo.dueType === 'resolution_sla' ? 'Resolution SLA Target' : 
-                 dueDateInfo.dueType === 'response_sla' ? 'Response SLA Target' : 
-                 dueDateInfo.dueType === 'schedule' ? 'Scheduled Start Time' : 
-                 'No Due Date'}
+                {dueDateInfo.dueType === 'resolution_sla' ? 'Resolution SLA Target' :
+                  dueDateInfo.dueType === 'response_sla' ? 'Response SLA Target' :
+                    dueDateInfo.dueType === 'schedule' ? 'Scheduled Start Time' :
+                      'No Due Date'}
               </p>
             </div>
 
             {/* Detailed SLA and Schedule Information */}
             <div className="grid grid-cols-1 gap-3 mb-2">
               {/* Scheduled Start */}
-              <div className={`rounded-xl p-3 border ${
-                dueDateInfo.dueType === 'schedule' && dueDateInfo.isOverdue ? 
+              <div className={`rounded-xl p-3 border ${dueDateInfo.dueType === 'schedule' && dueDateInfo.isOverdue ?
                 "bg-orange-50 border-orange-200" : "bg-muted/40 border-border"
-              }`}>
+                }`}>
                 <p className="text-xs font-bold text-muted-foreground mb-1">Scheduled Start</p>
                 <p className="text-xs text-foreground">
                   {wo.schedule_start_date ? formatDate(wo.schedule_start_date) + (wo.schedule_start_time ? " " + wo.schedule_start_time : "") : "—"}
@@ -1318,7 +1317,7 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
                 </span>
               </div>
             </div>
-            
+
             {wo.extension_date && <Row label="Extension Date" val={formatDate(wo.extension_date)} />}
             {wo.extension_reason && <Row label="Extension Reason" val={wo.extension_reason} />}
           </Sec>
@@ -1366,7 +1365,7 @@ const SCHEDULE_FREQS = ["None", "Daily", "Weekly", "Monthly", "Yearly"] as const
 type SchedFreq = typeof SCHEDULE_FREQS[number];
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
- interface WOForm {
+interface WOForm {
   wo_title: string; wo_type: string; wo_sub_type: string; wo_source: string;
   client_code: string; contract_code: string;
   branch_code: string; branch_name: string;
@@ -1442,7 +1441,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
 
   const clientsResult = useSimpleList<{ name: string; client_name: string }>("Client", ["name", "client_name"], []);
   const branchesResult = useSimpleList<{ name: string; branch_code: string; branch_name: string }>("Branch", ["name", "branch_code", "branch_name"], [["is_active", "=", 1]]);
-  const propertiesResult = useSimpleList<{ name: string; property_code: string; property_name: string }>("Property", ["name", "property_code", "property_name"], 
+  const propertiesResult = useSimpleList<{ name: string; property_code: string; property_name: string }>("Property", ["name", "property_code", "property_name"],
     form.branch_code ? [["branch_code", "=", form.branch_code], ["is_active", "=", 1]] : [["is_active", "=", 1]]
   );
   const zonesResult = useSimpleList<{ name: string; zone_code: string; zone_name: string }>("Zone", ["name", "zone_code", "zone_name"], form.property_code ? [["property_code", "=", form.property_code], ["is_active", "=", 1]] : [], !form.property_code);
@@ -1452,7 +1451,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
   const contractsResult = useSimpleList<{ name: string; contract_title: string }>("FM Contract", ["name", "contract_title"], form.client_code ? [["client_code", "=", form.client_code], ["status", "=", "Active"]] : [], !form.client_code);
   const techniciansResult = useSimpleList<{ name: string; resource_name: string }>("Resource", ["name", "resource_name"], []);
   const faultCodesResult = useSimpleList<{ name: string; fault_code: string; fault_description: string; service_group: string; fault_category: string; fault_name: string; default_priority: string }>("Fault Code", ["name", "fault_code", "fault_description", "service_group", "fault_category", "fault_name", "default_priority"], [["is_active", "=", 1]]);
-  
+
   // Extract data from results
   const clients = clientsResult.data || [];
   const branches = branchesResult.data || [];
@@ -1467,11 +1466,11 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
   const serviceGroupsResult = useSimpleList<{ name: string; service_group_name: string }>("Service Group", ["name", "service_group_name"], [["is_active", "=", 1]]);
   const faultCategoriesResult = useSimpleList<{ name: string; fault_category_name: string; service_group: string }>("Fault Category", ["name", "fault_category_name", "service_group"], [["is_active", "=", 1]]);
   const faultNamesResult = useSimpleList<{ name: string; fault_name_title: string; fault_category: string; service_group: string }>("Fault Name", ["name", "fault_name_title", "fault_category", "service_group"], [["is_active", "=", 1]]);
-  
+
   const serviceGroups = serviceGroupsResult.data || [];
   const faultCategories = faultCategoriesResult.data || [];
   const faultNames = faultNamesResult.data || [];
-  
+
   // Log errors for debugging
   if (serviceGroupsResult.error) console.error("Service Groups error:", serviceGroupsResult.error);
   if (faultCategoriesResult.error) console.error("Fault Categories error:", faultCategoriesResult.error);
@@ -1480,7 +1479,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
   const serviceRequests = serviceRequestsResult.data || [];
 
   // Filter service groups based on selected fault code
-  const serviceGroupsFiltered = (form.fault_code && serviceGroups && faultCodes) ? 
+  const serviceGroupsFiltered = (form.fault_code && serviceGroups && faultCodes) ?
     (() => {
       const selectedFaultCode = faultCodes.find(fc => fc.name === form.fault_code);
       if (selectedFaultCode && selectedFaultCode.service_group) {
@@ -1488,11 +1487,11 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
         return sg ? [sg] : [];
       }
       return serviceGroups;
-    })() : 
+    })() :
     (serviceGroups || []);
 
   // Filter fault categories based on selected service group and fault code
-  const faultCategoriesFiltered = (form.service_group && faultCategories) ? 
+  const faultCategoriesFiltered = (form.service_group && faultCategories) ?
     faultCategories.filter(fc => {
       const matchesSG = fc.service_group === form.service_group;
       if (form.fault_code) {
@@ -1500,11 +1499,11 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
         return matchesSG && selectedFaultCode && selectedFaultCode.fault_category === fc.name;
       }
       return matchesSG;
-    }) : 
+    }) :
     (faultCategories || []);
 
   // Filter fault names based on selected fault category and fault code
-  const faultNamesFiltered = (form.fault_category && faultNames) ? 
+  const faultNamesFiltered = (form.fault_category && faultNames) ?
     faultNames.filter(fn => {
       const matchesFC = fn.fault_category === form.fault_category;
       if (form.fault_code) {
@@ -1512,17 +1511,17 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
         return matchesFC && selectedFaultCode && selectedFaultCode.fault_name === fn.name;
       }
       return matchesFC;
-    }) : 
+    }) :
     (faultNames || []);
 
   // Filter fault codes based on cascade selection (service_group > fault_category > fault_name)
   const faultCodesFiltered = form.fault_name
     ? faultCodes.filter(fc => fc.fault_name === form.fault_name)
     : form.fault_category
-    ? faultCodes.filter(fc => fc.fault_category === form.fault_category)
-    : form.service_group
-    ? faultCodes.filter(fc => fc.service_group === form.service_group)
-    : faultCodes;
+      ? faultCodes.filter(fc => fc.fault_category === form.fault_category)
+      : form.service_group
+        ? faultCodes.filter(fc => fc.service_group === form.service_group)
+        : faultCodes;
 
   /* dynamic path update */
   useEffect(() => {
@@ -1758,7 +1757,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
           const msg = upJson.message;
           const newUrl = msg && typeof msg === 'object' ? (msg.file_url ?? msg.file_name ?? null) : typeof msg === 'string' ? msg : null;
           if (newUrl) {
-            try { await frappeUpdate('Work Orders', doc.name, { before_photo: newUrl }); } catch (err) { }
+            try { await frappeUpdate('Work Orders', doc.name, { before_photo: newUrl }); } catch (err) { console.error("Failed to update before_photo", err); }
           }
         } else {
           throw new Error('Image upload failed');
@@ -1786,7 +1785,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
           const msg = upJson.message;
           const newUrl = msg && typeof msg === 'object' ? (msg.file_url ?? msg.file_name ?? null) : typeof msg === 'string' ? msg : null;
           if (newUrl) {
-            try { await frappeUpdate('Work Orders', doc.name, { after_photo: newUrl }); } catch (err) { }
+            try { await frappeUpdate('Work Orders', doc.name, { after_photo: newUrl }); } catch (err) { console.error("Failed to update after_photo", err); }
           }
         } else {
           throw new Error('Image upload failed');
@@ -1858,7 +1857,15 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
           />
           {current && (
             <button type="button"
-              onClick={() => { onChangeOverride ? onChangeOverride("") : set(fk)(""); setQuery(""); setOpen(false); }}
+              onClick={() => {
+                if (onChangeOverride) {
+                  onChangeOverride("");
+                } else {
+                  set(fk)("");
+                }
+                setQuery("");
+                setOpen(false);
+              }}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
               <X className="w-3.5 h-3.5" />
             </button>
@@ -1870,7 +1877,15 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
               ? <div className="px-3 py-3 text-xs text-muted-foreground text-center">No results found</div>
               : filtered.map(o => (
                 <button key={o.v} type="button"
-                  onClick={() => { onChangeOverride ? onChangeOverride(o.v) : set(fk)(o.v); setOpen(false); setQuery(""); }}
+                  onClick={() => {
+                    if (onChangeOverride) {
+                      onChangeOverride(o.v);
+                    } else {
+                      set(fk)(o.v);
+                    }
+                    setOpen(false);
+                    setQuery("");
+                  }}
                   className={`w-full text-left px-3 py-2.5 text-sm hover:bg-muted transition-colors flex items-center justify-between gap-2
                     ${current === o.v ? "bg-primary/10 text-primary font-semibold" : "text-foreground"}`}>
                   <span className="truncate">{o.l}</span>
@@ -2033,15 +2048,15 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
                   )}
                   {form.fault_category && (
                     <><ArrowRight className="w-3 h-3 text-muted-foreground" />
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold">
-                      {faultCategories.find(fc => fc.name === form.fault_category)?.fault_category_name || form.fault_category}
-                    </span></>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold">
+                        {faultCategories.find(fc => fc.name === form.fault_category)?.fault_category_name || form.fault_category}
+                      </span></>
                   )}
                   {form.fault_name && (
                     <><ArrowRight className="w-3 h-3 text-muted-foreground" />
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">
-                      {faultNames.find(fn => fn.name === form.fault_name)?.fault_name_title || form.fault_name}
-                    </span></>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">
+                        {faultNames.find(fn => fn.name === form.fault_name)?.fault_name_title || form.fault_name}
+                      </span></>
                   )}
                 </div>
               )}
@@ -2216,6 +2231,13 @@ const DONE_STATUSES = ["Completed", "Closed", "Cancelled"];
 
 export default function WorkOrders() {
   const navigate = useNavigate();
+  const { scope, canDo } = usePermissions();
+  const { user, userScope } = useAuth();
+
+  const scopeFilters: FF = scope.isResolved
+    ? (scope.filtersFor("Work Orders") as FF)
+    : [["name", "=", "__loading__"]]; // matches nothing → empty list while resolving
+
   const [tab, setTab] = useState<ListTab>("All");
   const [sort, setSort] = useState<SortKey>("Priority: Highest First");
   const [showSort, setShowSort] = useState(false);
@@ -2241,7 +2263,16 @@ export default function WorkOrders() {
   const [filterStatus, setFilterStatus] = useState("");
 
 
-
+const technicianNotLinked =
+  userScope.scopeRole === "Technician" &&
+  userScope.isResolved &&
+  !userScope.hasLinkedResource;
+ 
+// If not linked, override with a no-match filter so nothing loads
+const effectiveScopeFilters: FF = technicianNotLinked
+  ? [["name", "=", "__unlinked__"]]
+  : scopeFilters;
+ 
 
 
 
@@ -2256,34 +2287,60 @@ export default function WorkOrders() {
     return () => document.removeEventListener("mousedown", h);
   }, [activeFilterKey]);
 
-  const statusFilter: FF = [
-    [
-      "status",
-      "in",
-      (
-        tab === "To Do"
-          ? TODO_STATUSES
-          : tab === "Done"
-            ? DONE_STATUSES
-            : [...TODO_STATUSES, ...DONE_STATUSES]
-      ).join(","),
-    ],
-  ];
+  
+const statusFilter: FF = [
+  [
+    "status",
+    "in",
+    (
+      tab === "To Do"
+        ? TODO_STATUSES
+        : tab === "Done"
+          ? DONE_STATUSES
+          : [...TODO_STATUSES, ...DONE_STATUSES]
+    ).join(","),
+  ],
+];
 
-  const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
-    "Work Orders",
-    ["name", "wo_number", "wo_title", "wo_type", "wo_sub_type", "wo_source", "status",
-      "actual_priority", "default_priority", "client_code", "client_name",
-      "branch_code", "branch_name", "property_code", "property_name", 
-      "zone_code", "sub_zone_code", "base_unit_code", "location_full_path",
-      "asset_code", "asset_name",
-      "assigned_to", "assigned_technician", "secondary_tech", "secondary_technician_name",
-      "schedule_start_date", "schedule_start_time", "planned_duration_min",
-      "labor_hours", "spares_amount", "service_amount", "total_wo_cost",
-      "response_sla_breach", "resolution_sla_breach", "sr_number", "creation", "modified",
-      "initiator_type", "requested_by"],
-    statusFilter, [tab]
-  );
+
+
+  // Wait for scope to resolve before fetching — avoids a flash of all data
+  // for scoped roles. Admin resolves instantly (isResolved = true on login).
+  const scopeReady = scope.isResolved;
+const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
+  "Work Orders",
+  [
+    "name", "wo_number", "wo_title", "wo_type", "wo_sub_type", "wo_source", "status",
+    "actual_priority", "default_priority", "client_code", "client_name",
+    "branch_code", "branch_name", "property_code", "property_name",
+    "zone_code", "sub_zone_code", "base_unit_code", "location_full_path",
+    "asset_code", "asset_name",
+    "assigned_to", "assigned_technician", "secondary_tech", "secondary_technician_name",
+    "schedule_start_date", "schedule_start_time", "planned_duration_min",
+    "labor_hours", "spares_amount", "service_amount", "total_wo_cost",
+    "response_sla_breach", "resolution_sla_breach", "sr_number", "creation", "modified",
+    "initiator_type", "requested_by",
+  ],
+  // ↓ The combined filter. effectiveScopeFilters never leaks other users' data.
+  [...statusFilter, ...effectiveScopeFilters],
+  // ↓ Re-fetch when tab changes OR when scope finishes resolving
+  [tab, scope.isResolved, userScope.hasLinkedResource, JSON.stringify(effectiveScopeFilters)]
+);
+
+  // const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
+  //   "Work Orders",
+  //   ["name", "wo_number", "wo_title", "wo_type", "wo_sub_type", "wo_source", "status",
+  //     "actual_priority", "default_priority", "client_code", "client_name",
+  //     "branch_code", "branch_name", "property_code", "property_name",
+  //     "zone_code", "sub_zone_code", "base_unit_code", "location_full_path",
+  //     "asset_code", "asset_name",
+  //     "assigned_to", "assigned_technician", "secondary_tech", "secondary_technician_name",
+  //     "schedule_start_date", "schedule_start_time", "planned_duration_min",
+  //     "labor_hours", "spares_amount", "service_amount", "total_wo_cost",
+  //     "response_sla_breach", "resolution_sla_breach", "sr_number", "creation", "modified",
+  //     "initiator_type", "requested_by"],
+  //   statusFilter, [tab]
+  // );
 
   /* ── derive unique filter options from live data ── */
   const allBranches = useMemo(() => Array.from(new Set(allWOs.map((wo) => wo.branch_name || wo.branch_code).filter(Boolean))) as string[], [allWOs]);
@@ -2322,14 +2379,37 @@ export default function WorkOrders() {
     return (a.schedule_start_date || "").localeCompare(b.schedule_start_date || "");
   });
 
-  const myWOs = sorted.filter((_, i) => i % 3 === 0);
-  const teamWOs = sorted.filter((_, i) => i % 3 === 1);
-  const restWOs = sorted.filter((_, i) => i % 3 === 2);
-  const groups: [string, WOListItem[]][] = [
-    ["Assigned to You", myWOs],
-    ["Assigned to your Teams", teamWOs],
-    ["All Open Work Orders", restWOs],
-  ];
+  const groups: [string, WOListItem[]][] = (() => {
+  if (scope.scopeRole === "Technician") {
+    return [["My Work Orders", sorted]] as [string, WOListItem[]][];
+  }
+  if (scope.scopeRole === "Supervisor" || scope.scopeRole === "Branch Manager") {
+    const active = sorted.filter(wo =>
+      ["In Progress", "Assigned", "Pending Parts", "Pending Approval"].includes(wo.status ?? "")
+    );
+    const open = sorted.filter(wo =>
+      ["Draft", "Open", "Not Dispatched"].includes(wo.status ?? "")
+    );
+    return [
+      ["Active / In Progress", active],
+      ["Open / New", open],
+    ] as [string, WOListItem[]][];
+  }
+  // Admin: keep meaningful groupings
+  const active = sorted.filter(wo =>
+    ["In Progress", "Assigned", "Pending Parts", "Pending Approval"].includes(wo.status ?? "")
+  );
+  const open = sorted.filter(wo =>
+    ["Draft", "Open", "Not Dispatched"].includes(wo.status ?? "")
+  );
+  const other = sorted.filter(wo => !active.includes(wo) && !open.includes(wo));
+  return [
+    ["Active / In Progress", active],
+    ["Open / New", open],
+    ["Other", other],
+  ] as [string, WOListItem[]][];
+})();
+
 
   const toggleGroup = (k: string) => setCollapsedGroups(p => ({ ...p, [k]: !p[k] }));
 
@@ -2352,6 +2432,15 @@ export default function WorkOrders() {
   return (
     <div className="flex flex-col h-full">
       {/* TOP BAR */}
+      {technicianNotLinked && (
+  <div className="flex items-center gap-3 px-5 py-3 bg-amber-50 border-b border-amber-200 text-amber-800 text-sm">
+    <AlertCircle className="w-4 h-4 shrink-0 text-amber-500" />
+    <span>
+      <b>Account not linked:</b> Your user account is not connected to a Technician profile.
+      Please ask your administrator to set <code className="bg-amber-100 px-1 rounded">user_id = {user?.email ?? "your email"}</code> on your Resource record in Frappe.
+    </span>
+  </div>
+)}
       <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-card">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-foreground">Work Orders</h1>
@@ -2371,12 +2460,17 @@ export default function WorkOrders() {
               className="pl-9 pr-4 py-2 border border-border rounded-lg text-sm bg-background w-64 focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="Search Work Orders…" />
           </div>
-          <button onClick={() => { setShowForm(true); setEditName(undefined); setSelectedName(null); }}
-            className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors">
-            <Plus className="w-4 h-4" /> New Work Order
-          </button>
         </div>
       </div>
+      {canDo("work_orders") && (
+        <button
+          onClick={() => { setShowForm(true); setEditName(undefined); setSelectedName(null); }}
+          className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors"
+        >
+          <Plus className="w-4 h-4" /> New Work Order
+        </button>
+      )}
+
 
       {/* ══ DYNAMIC FILTER BAR ══ */}
       <div className="flex items-center gap-2 px-5 py-2 border-b border-border bg-card flex-wrap relative z-40" ref={filterRef}>

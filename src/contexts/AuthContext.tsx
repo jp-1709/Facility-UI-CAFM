@@ -1,337 +1,346 @@
 /**
  * AuthContext.tsx
  * ─────────────────────────────────────────────────────────────────────────────
- * Single source of truth for the logged-in user's identity, Frappe roles,
- * and computed CAFM permissions.
+ * Single source of truth for identity, Frappe roles, permissions, and
+ * data-level scope for all four CAFM roles:
  *
- * This version merges the robust permission-based checks with the standard
- * login/logout flow.
+ *  Technician    → WOs/PPM assigned to themselves only
+ *  Supervisor    → WOs/PPM assigned to their supervised technicians
+ *                  (linked via Resource.supervisor_code)
+ *  Branch Manager→ everything in their branch (linked via Branch.user_id)
+ *  Admin         → unrestricted, no extra fetches at login
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useCallback,
-  type ReactNode,
+  createContext, useContext, useState, useEffect, useCallback, type ReactNode,
 } from "react";
 import {
-  mergeRolePermissions,
-  canAccess,
-  canCreate,
-  canWrite,
-  type AccessLevel,
-  type ModuleKey,
+  mergeRolePermissions, canAccess, canCreate, canWrite,
+  type AccessLevel, type ModuleKey,
 } from "@/lib/permissions";
 import { useNavigate } from "react-router-dom";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Scope Types ─────────────────────────────────────────────────────────────
+
+export type ScopeRole = "Technician" | "Supervisor" | "Branch Manager" | "Admin";
+
+export interface UserScope {
+  scopeRole: ScopeRole;
+  /**
+   * Resource.name (= staff_code). Used as the `assigned_to` value on WOs/PPM.
+   * Set for Technician and Supervisor.
+   */
+  staffCode?: string;
+  /**
+   * branch_code. Set for Branch Manager (from Branch doc), and for
+   * Technician/Supervisor if their Resource doc has branch_code.
+   */
+  branchCode?: string;
+  /** Display name (resource_name or branch_name) */
+  resourceName?: string;
+  /**
+   * Supervisor only: staff_codes of all technicians supervised by this user.
+   * Fetched from Resources where supervisor_code = this supervisor's staffCode.
+   */
+  supervisedStaffCodes?: string[];
+  /** True once all async lookups are done */
+  isResolved: boolean;
+  /** False means no linked Resource/Branch was found → warn + show no scoped data */
+  hasLinkedResource: boolean;
+}
+
+const UNRESOLVED_SCOPE: UserScope = { scopeRole: "Admin", isResolved: false, hasLinkedResource: false };
+
+// ─── Auth Types ───────────────────────────────────────────────────────────────
 
 export interface UserProfile {
-  email: string;
-  full_name: string;
-  user_image?: string;
-  user_type?: string;
-  home_page?: string;
+  email: string; full_name: string; user_image?: string; user_type?: string;
 }
 
 export interface AuthContextType {
-  /** True while any Frappe call is still in-flight */
-  loading: boolean;
-  /** True once the initial auth check is complete (even if logged out) */
-  initialized: boolean;
-  /** null if not logged in or session expired */
-  user: UserProfile | null;
-  /** Exact role strings returned by Frappe (e.g. "Site Manager", "Technician") */
-  roles: string[];
-  /** Computed AccessLevel per ModuleKey */
+  loading: boolean; initialized: boolean;
+  user: UserProfile | null; roles: string[];
   permissions: Record<ModuleKey, AccessLevel>;
-  /** Is the user currently authenticated? */
-  isAuthenticated: boolean;
-  /** Error message from login or other auth operations */
-  error: string | null;
-
-  /** Action: Login */
-  login: (credentials: { email: string; password: string }) => Promise<{ success: boolean; error?: string }>;
-  /** Action: Logout */
-  logout: () => Promise<void>;
-  /** Action: Force a re-fetch (e.g. after an admin changes your role) */
-  refreshUser: () => Promise<void>;
-  /** Compatibility: Check auth manually */
-  checkAuth: () => boolean;
-
-  /** Permission Helper: Can user access module at minLevel? */
-  can: (module: ModuleKey, minLevel?: AccessLevel) => boolean;
-  /** Permission Helper: Can user create in module? */
-  canDo: (module: ModuleKey) => boolean; // alias for canCreate
-  /** Permission Helper: Can user write/edit in module? */
-  canEdit: (module: ModuleKey) => boolean; // alias for canWrite
+  userScope: UserScope;
+  isAuthenticated: boolean; error: string | null;
+  login: (c: { email: string; password: string }) => Promise<{ success: boolean; error?: string }>;
+  logout: () => Promise<void>; refreshUser: () => Promise<void>; checkAuth: () => boolean;
+  can: (m: ModuleKey, l?: AccessLevel) => boolean;
+  canDo: (m: ModuleKey) => boolean;
+  canEdit: (m: ModuleKey) => boolean;
 }
 
-// ─── Context & Hook ──────────────────────────────────────────────────────────
-
 const AuthContext = createContext<AuthContextType | null>(null);
-
 export function useAuthContext(): AuthContextType {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuthContext must be used inside <AuthProvider>");
   return ctx;
 }
-
-/** Alias for useAuthContext to maintain compatibility with existing hooks */
 export { useAuthContext as useAuth };
 
-// ─── Frappe API helpers ──────────────────────────────────────────────────────
+// ─── Frappe helpers ───────────────────────────────────────────────────────────
 
 const FRAPPE_BASE = typeof window !== "undefined" ? window.location.origin : "";
+function csrf() { return (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || ""; }
 
-function csrf(): string {
-  return (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || "";
-}
-
-async function frappeCall<T>(
-  method: string,
-  args?: Record<string, unknown>
-): Promise<T> {
+async function frappeCall<T>(method: string, args?: Record<string, unknown>): Promise<T> {
   const params = new URLSearchParams({
     cmd: method,
-    ...Object.fromEntries(
-      Object.entries(args ?? {}).map(([k, v]) => [k, String(v)])
-    ),
+    ...Object.fromEntries(Object.entries(args ?? {}).map(([k, v]) => [k, String(v)])),
   });
   const res = await fetch(`${FRAPPE_BASE}/api/method/${method}`, {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "X-Frappe-CSRF-Token": csrf(),
-    },
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Frappe-CSRF-Token": csrf() },
     body: params.toString(),
   });
-  if (!res.ok) throw new Error(`Frappe call ${method} failed: ${res.status}`);
-  const json = await res.json();
-  return json.message as T;
+  if (!res.ok) throw new Error(`${method} failed: ${res.status}`);
+  return (await res.json()).message as T;
 }
 
-async function frappeGetDoc<T>(
-  doctype: string,
-  name: string,
-  fields: string[]
-): Promise<T> {
-  const params = new URLSearchParams({
-    fields: JSON.stringify(fields),
-  });
+async function frappeGetDoc<T>(doctype: string, name: string, fields: string[]): Promise<T> {
+  const params = new URLSearchParams({ fields: JSON.stringify(fields) });
   const res = await fetch(
-    `${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(
-      name
-    )}?${params}`,
+    `${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}?${params}`,
     { credentials: "include" }
   );
   if (!res.ok) throw new Error(`GET ${doctype}/${name} failed: ${res.status}`);
   return (await res.json()).data as T;
 }
 
-// ─── Role fetching ────────────────────────────────────────────────────────────
-
-interface FrappeUserRole {
-  role: string;
+async function frappeList<T>(
+  doctype: string, fields: string[], filters: [string, string, string | number][]
+): Promise<T[]> {
+  const params = new URLSearchParams({
+    fields: JSON.stringify(fields), filters: JSON.stringify(filters), limit_page_length: "200",
+  });
+  const res = await fetch(
+    `${FRAPPE_BASE}/api/resource/${encodeURIComponent(doctype)}?${params}`,
+    { credentials: "include" }
+  );
+  if (!res.ok) throw new Error(`LIST ${doctype} failed: ${res.status}`);
+  return (await res.json()).data as T[];
 }
 
-interface FrappeUserDoc {
-  full_name: string;
-  user_image?: string;
-  user_type?: string;
-  roles: FrappeUserRole[];
-}
+// ─── Role & profile helpers ───────────────────────────────────────────────────
 
-async function fetchUserRoles(
-  email: string
-): Promise<{ profile: UserProfile; roles: string[] }> {
-  // Fetch profile and roles in parallel for better reliability and performance
+async function fetchUserRoles(email: string): Promise<{ profile: UserProfile; roles: string[] }> {
   const [doc, userRoles] = await Promise.all([
-    frappeGetDoc<FrappeUserDoc>("User", email, [
-      "full_name",
-      "user_image",
-      "user_type",
-    ]),
-    frappeCall<string[]>("quantbit_facility_management.api.facility_user_management.fm_get_user_roles", {
-      user_id: email
-    }).catch(err => {
-      console.error("Error fetching roles via fm_get_user_roles:", err);
-      return [] as string[];
-    })
+    frappeGetDoc<{ full_name: string; user_image?: string; user_type?: string }>(
+      "User", email, ["full_name", "user_image", "user_type"]
+    ),
+    frappeCall<string[]>(
+      "quantbit_facility_management.api.facility_user_management.fm_get_user_roles",
+      { user_id: email }
+    ).catch(err => { console.error("fm_get_user_roles:", err); return [] as string[]; }),
   ]);
-
   return {
-    profile: {
-      email,
-      full_name: doc.full_name ?? email,
-      user_image: doc.user_image,
-      user_type: doc.user_type,
-    },
+    profile: { email, full_name: doc.full_name ?? email, user_image: doc.user_image, user_type: doc.user_type },
     roles: userRoles || [],
   };
 }
 
+// ─── Scope resolution ─────────────────────────────────────────────────────────
+
+interface ResourceDoc { name: string; staff_code: string; branch_code: string; branch_name: string; resource_name: string; }
+interface BranchDoc   { name: string; branch_code: string; branch_name: string; }
+
+function deriveScopeRole(roles: string[]): ScopeRole {
+  // Check for admin roles first (case-insensitive)
+  const adminRoles = ["System Manager", "Administrator", "Admin", "System Administrator"];
+  if (roles.some(role => adminRoles.some(admin => role.toLowerCase() === admin.toLowerCase()))) {
+    return "Admin";
+  }
+  if (roles.includes("Technician"))    return "Technician";
+  if (roles.includes("Supervisor"))    return "Supervisor";
+  if (roles.includes("Branch Manager")) return "Branch Manager";
+  return "Admin";
+}
+
+async function fetchLinkedResource(email: string): Promise<ResourceDoc | null> {
+  try {
+    const rows = await frappeList<ResourceDoc>(
+      "Resource",
+      ["name", "staff_code", "branch_code", "branch_name", "resource_name"],
+      [["user_id", "=", email]]
+    );
+    return rows[0] ?? null;
+  } catch { return null; }
+}
+
+async function fetchLinkedBranch(email: string): Promise<BranchDoc | null> {
+  try {
+    const rows = await frappeList<BranchDoc>(
+      "Branch",
+      ["name", "branch_code", "branch_name"],
+      [["user_id", "=", email]]
+    );
+    return rows[0] ?? null;
+  } catch { return null; }
+}
+
+/**
+ * Fetch staff codes of all active technicians whose supervisor_code = supervisorCode.
+ * This is how we know which technicians a Supervisor is responsible for.
+ */
+async function fetchSupervisedStaffCodes(supervisorCode: string): Promise<string[]> {
+  try {
+    const rows = await frappeList<{ name: string }>(
+      "Resource", ["name"],
+      [["supervisor_code", "=", supervisorCode], ["is_active", "=", 1]]
+    );
+    return rows.map(r => r.name);
+  } catch { return []; }
+}
+
+async function resolveUserScope(email: string, roles: string[]): Promise<UserScope> {
+  const scopeRole = deriveScopeRole(roles);
+
+  // Admin — no restriction, skip network calls
+  if (scopeRole === "Admin") {
+    return { scopeRole, isResolved: true, hasLinkedResource: true };
+  }
+
+  // Branch Manager — identified via Branch.user_id (not Resource)
+  if (scopeRole === "Branch Manager") {
+    const branch = await fetchLinkedBranch(email);
+    if (!branch) {
+      console.warn(`[Scope] Branch Manager "${email}" has no Branch with user_id set.`);
+      return { scopeRole, isResolved: true, hasLinkedResource: false };
+    }
+    return {
+      scopeRole,
+      branchCode: branch.name,   // Branch.name = branch_code (autoname by field)
+      resourceName: branch.branch_name,
+      isResolved: true,
+      hasLinkedResource: true,
+    };
+  }
+
+  // Technician / Supervisor — identified via Resource.user_id
+  const resource = await fetchLinkedResource(email);
+  if (!resource) {
+    console.warn(`[Scope] ${scopeRole} "${email}" has no Resource with user_id set.`);
+    return { scopeRole, isResolved: true, hasLinkedResource: false };
+  }
+
+  if (scopeRole === "Technician") {
+    return {
+      scopeRole,
+      staffCode: resource.name,
+      branchCode: resource.branch_code,
+      resourceName: resource.resource_name,
+      isResolved: true,
+      hasLinkedResource: true,
+    };
+  }
+
+  // Supervisor — also load their supervised technician list
+  const supervisedStaffCodes = await fetchSupervisedStaffCodes(resource.name);
+  if (supervisedStaffCodes.length === 0) {
+    console.warn(
+      `[Scope] Supervisor "${resource.resource_name}" has no linked technicians. ` +
+      "Open each technician's Resource record and set supervisor_code = this supervisor's staff_code."
+    );
+  }
+
+  return {
+    scopeRole,
+    staffCode: resource.name,
+    branchCode: resource.branch_code,
+    resourceName: resource.resource_name,
+    supervisedStaffCodes,
+    isResolved: true,
+    hasLinkedResource: true,
+  };
+}
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 const EMPTY_PERMS = {} as Record<ModuleKey, AccessLevel>;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [loading, setLoading] = useState(true);
-  const [initialized, setInitialized] = useState(false);
-  const [user, setUser] = useState<UserProfile | null>(null);
-  const [roles, setRoles] = useState<string[]>([]);
-  const [permissions, setPermissions] = useState<Record<ModuleKey, AccessLevel>>(
-    EMPTY_PERMS
-  );
-  const [error, setError] = useState<string | null>(null);
-
+  const [loading, setLoading]       = useState(true);
+  const [initialized, setInit]      = useState(false);
+  const [user, setUser]             = useState<UserProfile | null>(null);
+  const [roles, setRoles]           = useState<string[]>([]);
+  const [permissions, setPerms]     = useState<Record<ModuleKey, AccessLevel>>(EMPTY_PERMS);
+  const [userScope, setUserScope]   = useState<UserScope>(UNRESOLVED_SCOPE);
+  const [error, setError]           = useState<string | null>(null);
   const navigate = useNavigate();
 
   const doFetch = useCallback(async (opts?: { background?: boolean }) => {
     if (!opts?.background) setLoading(true);
     try {
-      // 1. Who is logged in?
       const email = await frappeCall<string>("frappe.auth.get_logged_user");
       if (!email || email === "Guest") {
-        setUser(null);
-        setRoles([]);
-        setPermissions(EMPTY_PERMS);
+        setUser(null); setRoles([]); setPerms(EMPTY_PERMS); setUserScope(UNRESOLVED_SCOPE);
         return;
       }
-
-      // 2. Fetch their profile + roles
       const { profile, roles: userRoles } = await fetchUserRoles(email);
-      const computedPerms = mergeRolePermissions(userRoles);
-
-      setUser(profile);
-      setRoles(userRoles);
-      setPermissions(computedPerms);
-      
-      // Update localStorage for compatibility if needed
+      const [computedPerms, scope] = await Promise.all([
+        Promise.resolve(mergeRolePermissions(userRoles)),
+        resolveUserScope(email, userRoles),
+      ]);
+      setUser(profile); setRoles(userRoles); setPerms(computedPerms); setUserScope(scope);
       localStorage.setItem("isAuthenticated", "true");
       localStorage.setItem("user", JSON.stringify(profile));
-    } catch (err) {
-      // Session expired or network error → treat as logged out
-      setUser(null);
-      setRoles([]);
-      setPermissions(EMPTY_PERMS);
-      localStorage.removeItem("isAuthenticated");
-      localStorage.removeItem("user");
-    } finally {
-      setLoading(false);
-      setInitialized(true);
-    }
+    } catch {
+      setUser(null); setRoles([]); setPerms(EMPTY_PERMS); setUserScope(UNRESOLVED_SCOPE);
+      localStorage.removeItem("isAuthenticated"); localStorage.removeItem("user");
+    } finally { setLoading(false); setInit(true); }
   }, []);
 
+  useEffect(() => { doFetch(); }, [doFetch]);
   useEffect(() => {
-    doFetch();
+    const h = () => doFetch({ background: true });
+    window.addEventListener("focus", h);
+    return () => window.removeEventListener("focus", h);
   }, [doFetch]);
 
-  // Re-fetch when the tab regains focus (handles session expiry)
-  useEffect(() => {
-    const handleFocus = () => {
-      doFetch({ background: true });
-    };
-    window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
-  }, [doFetch]);
-
-  const login = useCallback(
-    async (credentials: { email: string; password: string }) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const response = await fetch(`${FRAPPE_BASE}/api/method/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            usr: credentials.email,
-            pwd: credentials.password,
-          }),
-        });
-
-        const data = await response.json();
-
-        if (response.ok && data.message === "Logged In") {
-          await doFetch(); // Populate roles/permissions immediately
-          navigate("/dashboard", { replace: true });
-          return { success: true };
-        } else {
-          const errorMessage = data.message || "Login failed";
-          setError(errorMessage);
-          return { success: false, error: errorMessage };
-        }
-      } catch (err) {
-        const errorMessage =
-          err instanceof Error ? err.message : "An error occurred during login";
-        setError(errorMessage);
-        return { success: false, error: errorMessage };
-      } finally {
-        setLoading(false);
+  const login = useCallback(async (credentials: { email: string; password: string }) => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(`${FRAPPE_BASE}/api/method/login`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+        body: JSON.stringify({ usr: credentials.email, pwd: credentials.password }),
+      });
+      const data = await res.json();
+      if (res.ok && data.message === "Logged In") {
+        await doFetch(); navigate("/dashboard", { replace: true }); return { success: true };
       }
-    },
-    [doFetch, navigate]
-  );
+      const msg = data.message || "Login failed"; setError(msg); return { success: false, error: msg };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "An error occurred";
+      setError(msg); return { success: false, error: msg };
+    } finally { setLoading(false); }
+  }, [doFetch, navigate]);
 
   const logout = useCallback(async () => {
     try {
       await fetch(`${FRAPPE_BASE}/api/method/logout`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
       });
-    } catch (err) {
-      console.error("Logout error:", err);
-    } finally {
-      setUser(null);
-      setRoles([]);
-      setPermissions(EMPTY_PERMS);
-      localStorage.removeItem("isAuthenticated");
-      localStorage.removeItem("user");
+    } catch { /* ignore */ }
+    finally {
+      setUser(null); setRoles([]); setPerms(EMPTY_PERMS); setUserScope(UNRESOLVED_SCOPE);
+      localStorage.removeItem("isAuthenticated"); localStorage.removeItem("user");
       navigate("/login", { replace: true });
     }
   }, [navigate]);
 
-  const checkAuth = useCallback(() => {
-    return !!user;
-  }, [user]);
+  const can    = useCallback((m: ModuleKey, l?: AccessLevel) => canAccess(permissions, m, l), [permissions]);
+  const canDo  = useCallback((m: ModuleKey) => canCreate(permissions, m), [permissions]);
+  const canEdit = useCallback((m: ModuleKey) => canWrite(permissions, m), [permissions]);
 
-  const can = useCallback(
-    (module: ModuleKey, minLevel?: AccessLevel) =>
-      canAccess(permissions, module, minLevel),
-    [permissions]
+  return (
+    <AuthContext.Provider value={{
+      loading, initialized: initialized, user, roles, permissions, userScope,
+      isAuthenticated: !!user, error,
+      login, logout, refreshUser: doFetch, checkAuth: () => !!user,
+      can, canDo, canEdit,
+    }}>
+      {children}
+    </AuthContext.Provider>
   );
-  const canDo = useCallback(
-    (module: ModuleKey) => canCreate(permissions, module),
-    [permissions]
-  );
-  const canEdit = useCallback(
-    (module: ModuleKey) => canWrite(permissions, module),
-    [permissions]
-  );
-
-  const value: AuthContextType = {
-    loading,
-    initialized,
-    user,
-    roles,
-    permissions,
-    isAuthenticated: !!user,
-    error,
-    login,
-    logout,
-    refreshUser: doFetch,
-    checkAuth,
-    can,
-    canDo,
-    canEdit,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

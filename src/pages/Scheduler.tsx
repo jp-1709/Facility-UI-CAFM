@@ -1,4 +1,5 @@
-
+import { usePermissions } from "@/hooks/usePermissions";
+import { useAuth } from "@/contexts/AuthContext";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -550,14 +551,15 @@ function AgendaView({ items, onItemClick }: { items: ScheduleItem[]; onItemClick
 /* ═══════════════════════════════════════════
    UNASSIGNED REQUESTS PANEL
 ═══════════════════════════════════════════ */
-function UnassignedPanel({ requests, resources, onAssign, onRequestClick, height, setHeight, onResizeStart }: { 
-  requests: ServiceRequest[]; 
-  resources: Resource[]; 
-  onAssign: (srName: string, tech: string) => void; 
+function UnassignedPanel({ requests, resources, onAssign, onRequestClick, height, setHeight, onResizeStart, canAssign = true }: {
+  requests: ServiceRequest[];
+  resources: Resource[];
+  onAssign: (srName: string, tech: string) => void;
   onRequestClick: (sr: ServiceRequest) => void;
   height: number;
   setHeight: (h: number) => void;
   onResizeStart: (e: React.MouseEvent) => void;
+  canAssign?: boolean;
 }) {
   const [target, setTarget] = useState<string | null>(null);
   const [techMap, setTechMap] = useState<Record<string, string>>({});
@@ -568,12 +570,12 @@ function UnassignedPanel({ requests, resources, onAssign, onRequestClick, height
   return (
     <div className="border-t border-border bg-card shrink-0 relative flex flex-col" style={{ height: `${height}px`, minHeight: '45px', transition: 'height 0.1s ease-out' }}>
       {/* RESIZE HANDLE */}
-      <div 
+      <div
         onMouseDown={onResizeStart}
         className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize hover:bg-primary/40 transition-colors z-10"
         title="Drag to resize"
       />
-      
+
       <div className="flex items-center justify-between px-5 py-2.5 border-b border-border shrink-0">
         <div className="flex items-center gap-3">
           <span className="w-2 h-2 rounded-full bg-amber-500" />
@@ -589,51 +591,53 @@ function UnassignedPanel({ requests, resources, onAssign, onRequestClick, height
           </div>
         </div>
       </div>
-      
+
       {!isMinimized && (
         <div className="overflow-auto flex-1">
           <table className="w-full text-xs">
-          <thead><tr className="border-b border-border bg-muted/30">{["Request No", "Category", "Building", "Contact", "Priority", "Due Date", "Created", "Status", "Action"].map(h => <th key={h} className="px-4 py-2 text-left font-bold text-muted-foreground uppercase tracking-wider whitespace-nowrap">{h}</th>)}</tr></thead>
-          <tbody>
-            {requests.map((sr, i) => {
-              const urg = sr.priority_actual === "P1 - Critical";
-              const dot = PDOT[sr.priority_actual || ""] || "bg-gray-400";
-              return (
-                <tr key={sr.name} className={`border-b border-border hover:bg-muted/30 transition-colors ${i === requests.length - 1 ? "border-b-0" : ""}`}>
-                  <td className="px-4 py-2.5 font-semibold text-primary cursor-pointer hover:underline" onClick={() => onRequestClick(sr)}>{sr.name}</td>
-                  <td className="px-4 py-2.5 text-foreground">{sr.fault_category || "—"}</td>
-                  <td className="px-4 py-2.5 text-foreground">{sr.property_name || sr.property_code || "—"}</td>
-                  <td className="px-4 py-2.5 text-foreground">{sr.reported_by || "—"}</td>
-                  <td className="px-4 py-2.5"><span className={`w-7 h-7 rounded-full ${dot} flex items-center justify-center text-white font-bold text-[10px]`}>{sr.priority_actual?.split(" - ")[0] || "?"}</span></td>
-                  <td className={`px-4 py-2.5 font-semibold ${urg ? "text-red-500" : "text-foreground"}`}>
-                    {sr.appointment_date ? formatDate(sr.appointment_date) : (sr.raised_date ? formatDate(sr.raised_date) : "—")}
-                    {sr.appointment_date && isToday(new Date(sr.appointment_date)) && <span className="text-primary ml-1.5 font-bold"> — TODAY</span>}
-                    {!sr.appointment_date && sr.raised_date && isToday(new Date(sr.raised_date)) && <span className="text-primary ml-1.5 font-bold"> — TODAY</span>}
-                  </td>
-                  <td className="px-4 py-2.5 text-muted-foreground">{sr.raised_date ? `${formatDate(sr.raised_date)} ${sr.raised_time || ""}` : ""}</td>
-                  <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${urg ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground"}`}>{sr.status || "Unassigned"}</span></td>
-                  <td className="px-4 py-2.5">
-                    {target === sr.name ? (
-                      <div className="flex items-center gap-1.5">
-                        <select value={techMap[sr.name] || ""} onChange={e => setTechMap(p => ({ ...p, [sr.name]: e.target.value }))} className="border border-border rounded px-2 py-1 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-primary">
-                          <option value="">Select…</option>
-                          {resources.map(r => <option key={r.name} value={r.name}>{r.resource_name}</option>)}
-                        </select>
-                        <button disabled={!techMap[sr.name]} onClick={() => { onAssign(sr.name, techMap[sr.name]); setTarget(null); }} className="px-2.5 py-1 rounded bg-primary text-primary-foreground text-[10px] font-bold hover:bg-primary/90 disabled:opacity-40 transition-colors">OK</button>
-                        <button onClick={() => setTarget(null)} className="p-1 hover:bg-muted rounded transition-colors"><X className="w-3.5 h-3.5 text-muted-foreground" /></button>
-                      </div>
-                    ) : (
-                      <button onClick={() => setTarget(sr.name)} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${urg ? "bg-red-500 hover:bg-red-600 text-white" : "bg-primary hover:bg-primary/90 text-primary-foreground"}`}>
-                        {urg ? "Assign NOW" : "Assign →"}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+            <thead><tr className="border-b border-border bg-muted/30">{["Request No", "Category", "Building", "Contact", "Priority", "Due Date", "Created", "Status", "Action"].map(h => <th key={h} className="px-4 py-2 text-left font-bold text-muted-foreground uppercase tracking-wider whitespace-nowrap">{h}</th>)}</tr></thead>
+            <tbody>
+              {requests.map((sr, i) => {
+                const urg = sr.priority_actual === "P1 - Critical";
+                const dot = PDOT[sr.priority_actual || ""] || "bg-gray-400";
+                return (
+                  <tr key={sr.name} className={`border-b border-border hover:bg-muted/30 transition-colors ${i === requests.length - 1 ? "border-b-0" : ""}`}>
+                    <td className="px-4 py-2.5 font-semibold text-primary cursor-pointer hover:underline" onClick={() => onRequestClick(sr)}>{sr.name}</td>
+                    <td className="px-4 py-2.5 text-foreground">{sr.fault_category || "—"}</td>
+                    <td className="px-4 py-2.5 text-foreground">{sr.property_name || sr.property_code || "—"}</td>
+                    <td className="px-4 py-2.5 text-foreground">{sr.reported_by || "—"}</td>
+                    <td className="px-4 py-2.5"><span className={`w-7 h-7 rounded-full ${dot} flex items-center justify-center text-white font-bold text-[10px]`}>{sr.priority_actual?.split(" - ")[0] || "?"}</span></td>
+                    <td className={`px-4 py-2.5 font-semibold ${urg ? "text-red-500" : "text-foreground"}`}>
+                      {sr.appointment_date ? formatDate(sr.appointment_date) : (sr.raised_date ? formatDate(sr.raised_date) : "—")}
+                      {sr.appointment_date && isToday(new Date(sr.appointment_date)) && <span className="text-primary ml-1.5 font-bold"> — TODAY</span>}
+                      {!sr.appointment_date && sr.raised_date && isToday(new Date(sr.raised_date)) && <span className="text-primary ml-1.5 font-bold"> — TODAY</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-muted-foreground">{sr.raised_date ? `${formatDate(sr.raised_date)} ${sr.raised_time || ""}` : ""}</td>
+                    <td className="px-4 py-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${urg ? "bg-red-100 text-red-700" : "bg-muted text-muted-foreground"}`}>{sr.status || "Unassigned"}</span></td>
+                    <td className="px-4 py-2.5">
+                      {canAssign && (
+                        target === sr.name ? (
+                          <div className="flex items-center gap-1.5">
+                            <select value={techMap[sr.name] || ""} onChange={e => setTechMap(p => ({ ...p, [sr.name]: e.target.value }))} className="border border-border rounded px-2 py-1 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-primary">
+                              <option value="">Select…</option>
+                              {resources.map(r => <option key={r.name} value={r.name}>{r.resource_name}</option>)}
+                            </select>
+                            <button disabled={!techMap[sr.name]} onClick={() => { onAssign(sr.name, techMap[sr.name]); setTarget(null); }} className="px-2.5 py-1 rounded bg-primary text-primary-foreground text-[10px] font-bold hover:bg-primary/90 disabled:opacity-40 transition-colors">OK</button>
+                            <button onClick={() => setTarget(null)} className="p-1 hover:bg-muted rounded transition-colors"><X className="w-3.5 h-3.5 text-muted-foreground" /></button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setTarget(sr.name)} className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${urg ? "bg-red-500 hover:bg-red-600 text-white" : "bg-primary hover:bg-primary/90 text-primary-foreground"}`}>
+                            {urg ? "Assign NOW" : "Assign →"}
+                          </button>
+                        )
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -716,6 +720,27 @@ export default function Scheduler() {
 
   const [shiftFilt, setShiftFilt] = useState("All Shifts");
   const [resFilt, setResFilt] = useState("All Resources");
+  const { scope } = usePermissions();
+  const scopeReady = scope.isResolved;
+
+  // Helper: if scope isn't ready yet, return a no-match filter to block the fetch
+  function guardedFilter(filters: FF): FF {
+    return !scopeReady ? [["name", "=", "__scope_loading__"]] : filters;
+  }
+
+  const resScopeFilters: FF = guardedFilter(scope.filtersFor("Resource") as unknown as FF);
+  const woScopeFilters: FF = guardedFilter(scope.filtersFor("Work Orders") as unknown as FF);
+  const srScopeFilters: FF = guardedFilter(scope.filtersFor("Service Request") as unknown as FF);
+
+  // PPM Schedule: branch_code not available on this doctype.
+  // Technician → assigned_to = staffCode
+  // Supervisor → assigned_to IN supervised codes  (same as "Work Orders" filter)
+  // Branch Manager → branch_code doesn't exist on PPM, so use no filter (they see all PPMs)
+  const ppmScopeFilters: FF = guardedFilter(
+    (scope.scopeRole === "Admin" || scope.scopeRole === "Branch Manager")
+      ? []
+      : (scope.filtersFor("Work Orders") as unknown as FF)  // reuses assigned_to logic
+  );
   const [branchFilt, setBranchFilt] = useState("All Branches");
   const [propFilt, setPropFilt] = useState("All Properties");
   const [advFilt, setAdvFilt] = useState<{ status: string, priority: string, category: string }>({ status: "All", priority: "All", category: "All" });
@@ -729,6 +754,7 @@ export default function Scheduler() {
     if (advOpen) document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [advOpen]);
+
 
   const wkStart = getWeekStart(anchor);
   const wkEnd = addDays(wkStart, 6);
@@ -767,20 +793,125 @@ export default function Scheduler() {
     };
   }, [resize, stopResizing]);
 
-  const { data: resources, loading: rL, error: rE, refetch: rR } = useFetch<Resource>("Resource", ["name", "resource_name", "designation", "is_active", "branch_code", "branch_name"], [], []);
-  const { data: ppms, loading: pL, refetch: pR } = useFetch<PPMSchedule>("PPM Schedule",
-    ["name", "pm_id", "pm_title", "pm_type", "frequency", "status", "asset_code", "asset_name", "asset_category", "service_group", "property_code", "property_name", "zone_code", "sub_zone_code", "client_code", "client_name", "contract_code", "contract_group", "last_done_date", "next_due_date", "overdue_by_days", "assigned_to", "assigned_technician", "ppm_wo_number", "planned_duration_hrs", "estimated_spares", "checklist_reference", "notes"],
-    [["next_due_date", "between", [rs, re] as unknown as string]], [rs, re]);
-  const { data: workOrders, loading: wL, refetch: wR } = useFetch<WorkOrder>("Work Orders",
-    ["name", "wo_number", "wo_title", "wo_type", "status", "actual_priority", "assigned_to", "assigned_technician", "schedule_start_date", "schedule_start_time", "schedule_end_time", "planned_duration_min", "branch_code", "branch_name", "property_code", "property_name", "asset_code", "asset_name", "service_group", "fault_category", "client_code", "client_name", "response_sla_target", "response_sla_actual", "response_sla_breach", "resolution_sla_target", "resolution_sla_actual", "resolution_sla_breach", "work_done_notes"],
-    [["schedule_start_date", "between", [rs, re] as unknown as string]], [rs, re]);
-  const { data: unassignedSRs, refetch: sR } = useFetch<ServiceRequest>("Service Request",
-    ["name", "sr_title", "fault_category", "branch_code", "branch_name", "property_name", "property_code", "reported_by", "priority_actual", "raised_date", "raised_time", "status", "appointment_date", "priority_default", "client_code", "client_name", "contract_code", "contract_group", "zone_code", "sub_zone_code", "base_unit_code", "asset_code", "service_group", "fault_code", "reporting_level", "business_type", "approval_criticality", "work_description", "response_sla_target", "resolution_sla_target", "location_full_path", "wo_source"],
-    [["status", "=", "Open"], ["converted_to_wo", "=", 0]], []);
+  // const { data: resources, loading: rL, error: rE, refetch: rR } = useFetch<Resource>(
+  //   "Resource",
+  //   ["name", "resource_name", "designation", "is_active", "branch_code", "branch_name"],
+  //   // Branch Manager / Supervisor: only see their branch's technicians in Gantt
+  //   resScopeFilters,
+  //   [scopeReady, JSON.stringify(resScopeFilters)]
+  // );
+
+  // const { data: ppms, loading: pL, refetch: pR } = useFetch<PPMSchedule>(
+  //   "PPM Schedule",
+  //   [
+  //     "name","pm_id","pm_title","pm_type","frequency","status","asset_code","asset_name",
+  //     "asset_category","service_group","property_code","property_name","zone_code","sub_zone_code",
+  //     "client_code","client_name","contract_code","contract_group","last_done_date","next_due_date",
+  //     "overdue_by_days","assigned_to","assigned_technician","ppm_wo_number","planned_duration_hrs",
+  //     "estimated_spares","checklist_reference","notes",
+  //   ],
+  //   [["next_due_date", "between", [rs, re] as unknown as string], ...ppmScopeFilters],
+  //   [rs, re, scopeReady, JSON.stringify(ppmScopeFilters)]
+  // );
+
+  // const { data: workOrders, loading: wL, refetch: wR } = useFetch<WorkOrder>(
+  //   "Work Orders",
+  //   [
+  //     "name","wo_number","wo_title","wo_type","status","actual_priority","assigned_to",
+  //     "assigned_technician","schedule_start_date","schedule_start_time","schedule_end_time",
+  //     "planned_duration_min","branch_code","branch_name","property_code","property_name",
+  //     "asset_code","asset_name","service_group","fault_category","client_code","client_name",
+  //     "response_sla_target","response_sla_actual","response_sla_breach","resolution_sla_target",
+  //     "resolution_sla_actual","resolution_sla_breach","work_done_notes",
+  //   ],
+  //   [["schedule_start_date", "between", [rs, re] as unknown as string], ...woScopeFilters],
+  //   [rs, re, scopeReady, JSON.stringify(woScopeFilters)]
+  // );
+
+  // const { data: unassignedSRs, refetch: sR } = useFetch<ServiceRequest>(
+  //   "Service Request",
+  //   [
+  //     "name","sr_title","fault_category","branch_code","branch_name","property_name","property_code",
+  //     "reported_by","priority_actual","raised_date","raised_time","status","appointment_date",
+  //     "priority_default","client_code","client_name","contract_code","contract_group","zone_code",
+  //     "sub_zone_code","base_unit_code","asset_code","service_group","fault_code","reporting_level",
+  //     "business_type","approval_criticality","work_description","response_sla_target",
+  //     "resolution_sla_target","location_full_path","wo_source",
+  //   ],
+  //   // Keep open/unconverted filter, add branch scope for Supervisor/Branch Manager
+  //   [["status", "=", "Open"], ["converted_to_wo", "=", 0], ...srScopeFilters],
+  //   [scopeReady, JSON.stringify(srScopeFilters)]
+  // );
+
+  const { data: resources, loading: rL, error: rE, refetch: rR } = useFetch<Resource>(
+    "Resource",
+    ["name", "resource_name", "designation", "is_active", "branch_code", "branch_name"],
+    // Technician: [["name","=","TECH-001"]]  → only self in Gantt row
+    // Supervisor: [["name","in","TECH-001,TECH-002"]] → only supervised team
+    // Branch Manager: [["branch_code","=","BR-01"]]  → all in branch
+    // Admin: []
+    resScopeFilters,
+    [scopeReady, JSON.stringify(resScopeFilters)]
+  );
+
+  const { data: ppms, loading: pL, refetch: pR } = useFetch<PPMSchedule>(
+    "PPM Schedule",
+    ["name", "pm_id", "pm_title", "pm_type", "frequency", "status", "asset_code", "asset_name",
+      "asset_category", "service_group", "property_code", "property_name", "zone_code", "sub_zone_code",
+      "client_code", "client_name", "contract_code", "contract_group", "last_done_date", "next_due_date",
+      "overdue_by_days", "assigned_to", "assigned_technician", "ppm_wo_number", "planned_duration_hrs",
+      "estimated_spares", "checklist_reference", "notes"],
+    [["next_due_date", "between", [rs, re] as unknown as string], ...ppmScopeFilters],
+    [rs, re, scopeReady, JSON.stringify(ppmScopeFilters)]
+  );
+
+  const { data: workOrders, loading: wL, refetch: wR } = useFetch<WorkOrder>(
+    "Work Orders",
+    ["name", "wo_number", "wo_title", "wo_type", "status", "actual_priority", "assigned_to",
+      "assigned_technician", "schedule_start_date", "schedule_start_time", "schedule_end_time",
+      "planned_duration_min", "branch_code", "branch_name", "property_code", "property_name",
+      "asset_code", "asset_name", "service_group", "fault_category", "client_code", "client_name",
+      "response_sla_target", "response_sla_actual", "response_sla_breach",
+      "resolution_sla_target", "resolution_sla_actual", "resolution_sla_breach", "work_done_notes"],
+    [["schedule_start_date", "between", [rs, re] as unknown as string], ...woScopeFilters],
+    [rs, re, scopeReady, JSON.stringify(woScopeFilters)]
+  );
+
+  const { data: unassignedSRs, refetch: sR } = useFetch<ServiceRequest>(
+    "Service Request",
+    ["name", "sr_title", "fault_category", "branch_code", "branch_name", "property_name",
+      "property_code", "reported_by", "priority_actual", "raised_date", "raised_time", "status",
+      "appointment_date", "priority_default", "client_code", "client_name", "contract_code",
+      "contract_group", "zone_code", "sub_zone_code", "base_unit_code", "asset_code", "service_group",
+      "fault_code", "reporting_level", "business_type", "approval_criticality", "work_description",
+      "response_sla_target", "resolution_sla_target", "location_full_path", "wo_source"],
+    // Keep the existing open/unconverted filter and ADD the branch scope for Supervisor/BM
+    [["status", "=", "Open"], ["converted_to_wo", "=", 0], ...srScopeFilters],
+    [scopeReady, JSON.stringify(srScopeFilters)]
+  );
 
   const refetchAll = () => { pR(); wR(); sR(); rR(); };
 
   const isLoading = pL || wL || rL;
+
+  // CHANGE 5 — Loading guard (keeps UX clean while scope resolves)
+  if (!scopeReady) {
+    return (
+      <div className="flex items-center justify-center h-full gap-3 text-muted-foreground">
+        <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        <span className="text-sm">Resolving access scope…</span>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="text-sm font-medium">Loading scheduler data…</p>
+      </div>
+    );
+  }
   const res = resources.length > 0 ? resources : FALLBACK_RESOURCES;
 
   const allItems: ScheduleItem[] = mode === "Job Requests" ? (workOrders as ScheduleItem[]) : mode === "Call Tasks" ? (ppms as ScheduleItem[]) : [...(workOrders as ScheduleItem[]), ...(ppms as ScheduleItem[])];
@@ -1025,14 +1156,15 @@ export default function Scheduler() {
       </div>
 
       {/* UNASSIGNED PANEL */}
-      <UnassignedPanel 
-        requests={unassignedSRs} 
-        resources={res} 
-        onAssign={handleAssign} 
+      <UnassignedPanel
+        requests={unassignedSRs}
+        resources={res}
+        onAssign={handleAssign}
         onRequestClick={handleRequestClick}
         height={panelHeight}
         setHeight={setPanelHeight}
         onResizeStart={startResizing}
+        canAssign={scope.scopeRole !== "Technician"}
       />
 
       {/* DETAIL MODAL */}

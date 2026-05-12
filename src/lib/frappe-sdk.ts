@@ -47,3 +47,24 @@ export async function frappeFetch(input: RequestInfo | URL, init: RequestInit = 
 
 	return fetch(input, finalInit);
 }
+/**
+ * Generates Row-Level Security (RLS) filters based on user role and metadata.
+ */
+export function getRLSFilters(doctype: string, user: any, roles: string[]) {
+const isAdmin = roles.some(r => ["Super Admin", "Administrator", "System Manager"].includes(r));
+if (isAdmin) return [];
+
+const filters: any[] = [];
+
+if (doctype === "Work Orders") {
+if (roles.includes("Technician")) {
+if (user?.staff_code) filters.push(["assigned_to", "=", user.staff_code]);
+} else if (roles.includes("Branch Manager") || roles.includes("Supervisor")) {
+if (user?.branch_code) filters.push(["branch_code", "=", user.branch_code]);
+}
+} else if (doctype === "Service Request") {
+if (user?.branch_code) filters.push(["branch_code", "=", user.branch_code]);
+}
+
+return filters;
+}

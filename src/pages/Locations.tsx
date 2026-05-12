@@ -863,6 +863,12 @@ function NewLocationForm({ onClose, onCreated, editData, editLevel }: { onClose:
     [form.zone_link], !form.zone_link
   );
   const { data: clients } = useFrappeList<{ name: string; client_name: string }>("Client", ["name", "client_name"], [], []);
+  const { data: contracts } = useFrappeList<{ name: string; contract_code: string; contract_title: string; client_code: string }>(
+    "FM Contract", ["name", "contract_code", "contract_title", "client_code"], [["status", "=", "Active"]], []
+  );
+  const contractsFiltered = (form.client_code && contracts)
+    ? contracts.filter(c => c.client_code === form.client_code)
+    : (contracts || []);
 
   const handleSubmit = async () => {
     setSaving(true); setSaveError(null);
@@ -1113,7 +1119,7 @@ function NewLocationForm({ onClose, onCreated, editData, editLevel }: { onClose:
             </div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2 mt-3">Client & Contract</p>
             <FSelect label="Client" fk="client_code" form={form} set={set} required options={clients.map((c) => ({ v: c.name, l: c.client_name }))} />
-            <FInput label="Contract Code" fk="contract_code" form={form} set={set} placeholder="CON-2026-001" />
+            <FSelect label="Contract Code" fk="contract_code" form={form} set={set} options={contractsFiltered.map((c) => ({ v: c.name, l: `${c.contract_code} — ${c.contract_title}` }))} />
           </>
         )}
 

@@ -627,11 +627,12 @@ function QuickActions() {
     { label: "Work Orders", icon: <ClipboardList className="w-4 h-4" />, color: "#4f46e5", bg: "#eef2ff", route: "/work-orders" },
     { label: "Requests", icon: <MessageSquare className="w-4 h-4" />, color: "#0891b2", bg: "#ecfeff", route: "/requests" },
     { label: "Assets", icon: <Package className="w-4 h-4" />, color: "#7c3aed", bg: "#f5f3ff", route: "/assets" },
+    { label: "Clients", icon: <Building2 className="w-4 h-4" />, color: "#0d9488", bg: "#f0fdfa", route: "/clients" },
     { label: "Technicians", icon: <Users className="w-4 h-4" />, color: "#059669", bg: "#ecfdf5", route: "/technicians" },
     { label: "Calendar", icon: <Calendar className="w-4 h-4" />, color: "#d97706", bg: "#fffbeb", route: "/calendar" },
     { label: "Reports", icon: <BarChart2 className="w-4 h-4" />, color: "#dc2626", bg: "#fef2f2", route: "/reports" },
     { label: "Locations", icon: <Map className="w-4 h-4" />, color: "#ea580c", bg: "#fff7ed", route: "/locations" },
-    { label: "Contracts", icon: <FileText className="w-4 h-4" />, color: "#0d9488", bg: "#f0fdfa", route: "/contracts" },
+    { label: "Contracts", icon: <FileText className="w-4 h-4" />, color: "#0369a1", bg: "#f0f9ff", route: "/contracts" },
   ];
 
   const handleActionClick = (route: string) => {

@@ -10,6 +10,9 @@
  * Data: PPM Schedule + Work Orders + Service Requests (Frappe REST)
  */
 
+import { usePermissions } from "@/hooks/usePermissions";
+import { useAuth } from "@/contexts/AuthContext";
+import { getRLSFilters } from "../lib/frappe-sdk";
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ChevronLeft, ChevronRight, Plus, Search, Filter, X, Loader2,
@@ -1269,7 +1272,6 @@ export default function CalendarView() {
   const [selectedEv, setSelectedEv] = useState<CalEvent | null>(null);
   const [quickCreate, setQuickCreate] = useState<{ date: string; time?: string; resourceKey?: string } | null>(null);
 
-  /* range for fetching */
   const wkStart = weekStart(anchor);
   const rangeStart = view === "Month"
     ? new Date(anchor.getFullYear(), anchor.getMonth(), 1)
@@ -1278,28 +1280,52 @@ export default function CalendarView() {
     ? new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0)
     : addDays(wkStart, 6);
   const rs = dateKey(rangeStart); const re = dateKey(rangeEnd);
+  const { scope } = usePermissions();
+  const scopeReady = scope.isResolved;
 
-  /* fetch data */
-  const { data: ppms, loading: pL, error: pE, refetch: pR } = useFetch<PPM>("PPM Schedule",
-    ["name","pm_id","pm_title","pm_type","frequency","status","asset_code","asset_name","asset_category","service_group",
-      "property_code","property_name","zone_code","sub_zone_code","base_unit_code","client_code","client_name",
-      "contract_code","contract_group","last_done_date","next_due_date","overdue_by_days","assigned_to",
-      "assigned_technician","ppm_wo_number","planned_duration_hrs","estimated_spares","checklist_reference","notes"],
-    [["next_due_date","between",[rs,re] as unknown as string]], [rs, re, view]);
-
-  const { data: wos, loading: wL, error: wE, refetch: wR } = useFetch<WO>("Work Orders",
-    ["name","wo_number","wo_title","wo_type","status","actual_priority","assigned_to","assigned_technician",
-      "schedule_start_date","schedule_start_time","schedule_end_time","planned_duration_min",
-      "property_code","property_name","zone_code","sub_zone_code","asset_code","asset_name",
-      "service_group","fault_category","client_code","client_name","work_done_notes"],
-    [["schedule_start_date","between",[rs,re] as unknown as string]], [rs, re, view]);
-
-  const { data: srs, loading: sL, error: sE, refetch: sR } = useFetch<SR>("Service Request",
-    ["name","sr_title","status","wo_source","fault_category","priority_actual",
-      "property_code","property_name","reported_by","raised_date","raised_time","client_code"],
-    [["raised_date","between",[rs,re] as unknown as string]], [rs, re, view]);
-
-  const resources = useSimple<Resource>("Resource", ["name","resource_name"], []);
+  const woScopeFilters  = scopeReady ? scope.filtersFor("Work Orders") as FF     : [["name", "=", "__loading__"]] as FF;
+  const srScopeFilters  = scopeReady ? scope.filtersFor("Service Request") as FF  : [["name", "=", "__loading__"]] as FF;
+  const resScopeFilters = scopeReady ? scope.filtersFor("Resource") as FF         : [["name", "=", "__loading__"]] as FF;
+  const ppmScopeFilters: FF =
+    scopeReady
+      ? (scope.scopeRole === "Branch Manager"
+          ? []          // BM sees all PPMs (no branch_code field on PPM Schedule)
+          : (scope.filtersFor("Work Orders") as FF))
+      : [["name", "=", "__loading__"]] as FF;
+  const { data: ppms, loading: pL, error: pE, refetch: pR } = useFetch<PPM>(
+  "PPM Schedule",
+  ["name","pm_id","pm_title","pm_type","frequency","status","asset_code","asset_name",
+   "asset_category","service_group","property_code","property_name","zone_code","sub_zone_code",
+   "base_unit_code","client_code","client_name","contract_code","contract_group",
+   "last_done_date","next_due_date","overdue_by_days","assigned_to","assigned_technician",
+   "ppm_wo_number","planned_duration_hrs","estimated_spares","checklist_reference","notes"],
+  [["next_due_date","between",[rs,re] as unknown as string], ...ppmScopeFilters],
+  [rs, re, view, scopeReady, JSON.stringify(ppmScopeFilters)]
+);
+ 
+const { data: wos, loading: wL, error: wE, refetch: wR } = useFetch<WO>(
+  "Work Orders",
+  ["name","wo_number","wo_title","wo_type","status","actual_priority","assigned_to","assigned_technician",
+   "schedule_start_date","schedule_start_time","schedule_end_time","planned_duration_min",
+   "property_code","property_name","zone_code","sub_zone_code","asset_code","asset_name",
+   "service_group","fault_category","client_code","client_name","work_done_notes"],
+  [["schedule_start_date","between",[rs,re] as unknown as string], ...woScopeFilters],
+  [rs, re, view, scopeReady, JSON.stringify(woScopeFilters)]
+);
+ 
+const { data: srs, loading: sL, error: sE, refetch: sR } = useFetch<SR>(
+  "Service Request",
+  ["name","sr_title","status","wo_source","fault_category","priority_actual",
+   "property_code","property_name","reported_by","raised_date","raised_time","client_code"],
+  [["raised_date","between",[rs,re] as unknown as string], ...srScopeFilters],
+  [rs, re, view, scopeReady, JSON.stringify(srScopeFilters)]
+);
+  const resources = useSimple<Resource>(
+    "Resource",
+    ["name","resource_name"],
+    resScopeFilters as FF,
+    !scopeReady
+  );
   const properties = useSimple<Property>("Property", ["name","property_code","property_name","contract_code"], []);
   const assets = useSimple<Asset>("CFAM Asset", ["name","asset_code","asset_name"], [["asset_status","=","Active"]]);
   const clients = useSimple<Client>("Client", ["name","client_code","client_name"], []);
@@ -1452,6 +1478,13 @@ export default function CalendarView() {
 
       {/* errors */}
       {errors.map((e, i) => e && <ErrMsg key={i} msg={e} />)}
+
+      {!scopeReady && (
+        <div className="flex items-center justify-center h-full gap-3 text-muted-foreground">
+          <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm">Resolving access scope…</span>
+        </div>
+      )}
 
       {/* ══ BODY: sidebar + main ══ */}
       <div className="flex flex-1 overflow-hidden">

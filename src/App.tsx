@@ -13,6 +13,7 @@ import Dashboard from "@/pages/Dashboard";
 import WorkOrders from "@/pages/WorkOrders";
 import Requests from "@/pages/Requests";
 import Assets from "@/pages/Assets";
+import Clients from "@/pages/Clients";
 import Contracts from "@/pages/Contracts";
 import IotDashboard from "@/pages/IotDashboard";
 
@@ -30,14 +31,11 @@ import ContractReporting from "@/pages/ContractReporting";
 import AssetReporting from "@/pages/AssetReporting";
 
 
-// F&B / Hospitality
-import Reservations from "@/pages/Reservations";
-import RecipeManagement from "@/pages/RecipeManagement";
-import Manufacturing from "@/pages/Manufacturing";
+
 
 // Admin
-import CategoriesManagement from "@/pages/CategoriesManagement";
-import UnitsManagement from "@/pages/UnitsManagement";
+import Categories from "@/pages/Categories";
+import Units from "@/pages/Units";
 import WorkspaceManagement from "@/pages/WorkspaceManagement";
 import UserSetup from "@/pages/UserSetup";
 
@@ -77,6 +75,10 @@ const App = () => {
           <Route element={<ProtectedRoute module="assets" />}>
             <Route path="/assets" element={<Assets />} />
           </Route>
+          
+          <Route element={<ProtectedRoute module="clients" />}>
+            <Route path="/clients" element={<Clients />} />
+          </Route>
 
           <Route element={<ProtectedRoute module="contracts" />}>
             <Route path="/contracts" element={<Contracts />} />
@@ -115,25 +117,12 @@ const App = () => {
 
 
 
-          {/* ── F&B ─────────────────────────────────────────────── */}
-          <Route element={<ProtectedRoute module="reservations" />}>
-            <Route path="/reservations" element={<Reservations />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="recipe_management" />}>
-            <Route path="/recipe-management" element={<RecipeManagement />} />
-          </Route>
-
-          <Route element={<ProtectedRoute module="manufacturing" />}>
-            <Route path="/manufacturing" element={<Manufacturing />} />
-          </Route>
-
           <Route element={<ProtectedRoute module="categories_management" />}>
-            <Route path="/categories" element={<CategoriesManagement />} />
+            <Route path="/categories" element={<Categories />} />
           </Route>
 
           <Route element={<ProtectedRoute module="units_management" />}>
-            <Route path="/units" element={<UnitsManagement />} />
+            <Route path="/units" element={<Units />} />
           </Route>
 
           <Route element={<ProtectedRoute module="workspace_management" />}>

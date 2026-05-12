@@ -9,10 +9,33 @@ import {
   Tag, LayoutGrid, List, Package as PackageIcon, RotateCcw,
 } from "lucide-react";
 import { toast as sonnerToast } from "sonner";
+import { usePermissions } from "@/hooks/usePermissions";
 
-/* ═══════════════════════════════════════════
-   GLOBAL STYLES
-═══════════════════════════════════════════ */
+// Helper function to construct correct image URLs
+function getImageUrl(imagePath?: string): string | null {
+  if (!imagePath) return null;
+  
+  // If it's already a full URL, return as-is
+  if (imagePath.startsWith('http')) {
+    return imagePath;
+  }
+  
+  // For Frappe file URLs, use the current domain
+  const baseUrl = window.location.origin;
+  
+  // Handle different Frappe file path formats
+  if (imagePath.startsWith('/files/')) {
+    return `${baseUrl}${imagePath}`;
+  }
+  
+  if (imagePath.startsWith('files/')) {
+    return `${baseUrl}/${imagePath}`;
+  }
+  
+  // Remove leading slash if present to avoid double slashes
+  const cleanPath = imagePath.startsWith('/') ? imagePath.slice(1) : imagePath;
+  return `${baseUrl}/${cleanPath}`;
+}
 
 const ASSET_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -162,7 +185,7 @@ function useAssetStyles() {
 ═══════════════════════════════════════════ */
 
 const FRAPPE_BASE = "";
-type FrappeFilters = [string, string, string | number][];
+type FrappeFilters = [string, string, string | number | boolean][];
 
 async function frappeGet<T>(doctype: string, fields: string[], filters: FrappeFilters = [], limit = 500, order_by?: string): Promise<T[]> {
   const params = new URLSearchParams({
@@ -672,7 +695,7 @@ function AssetPublicView({ assetCode, onClose }: AssetPublicViewProps) {
               <div className="w-16 h-16 rounded-2xl border border-white/50 shadow-md flex items-center justify-center overflow-hidden shrink-0"
                 style={{ background: catCfg.bg, color: catCfg.color }}>
                 {a.asset_image
-                  ? <img src={a.asset_image.startsWith("http") ? a.asset_image : `http://facility.quantcloud.in${a.asset_image}`}
+                  ? <img src={getImageUrl(a.asset_image) || ''}
                       className="w-16 h-16 object-cover" alt="" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
                   : <span className="scale-150">{catCfg.icon}</span>}
               </div>
@@ -1474,13 +1497,13 @@ const EditSelect = ({ label, value, onChange, dirty, opts, req }: {
 
 function EditAssetDrawer({
   asset, onClose, onSaved,
-}: { asset: AssetListItem; onClose: () => void; onSaved: () => void }) {
+}: { asset: AssetListItem; onClose: () => void; onSaved: () => void }): JSX.Element {
   const [form, setForm] = useState<EditAssetState>(() => assetToEditState(asset));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(
     asset.asset_image
-      ? (asset.asset_image.startsWith("http") ? asset.asset_image : `http://facility.quantcloud.in${asset.asset_image}`)
+      ? getImageUrl(asset.asset_image)
       : null
   );
   const [uploadingImg, setUploadingImg] = useState(false);
@@ -1539,8 +1562,14 @@ function EditAssetDrawer({
 
   async function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return;
-    if (!file.type.startsWith("image/")) { setSaveError("Please select an image file."); return; }
-    if (file.size > 10 * 1024 * 1024) { setSaveError("Image must be under 10 MB."); return; }
+    if (!file.type.startsWith("image/")) { 
+      sonnerToast.error("Please select an image file."); 
+      return; 
+    }
+    if (file.size > 10 * 1024 * 1024) { 
+      sonnerToast.error("Image must be under 10 MB."); 
+      return; 
+    }
     setImagePreview(URL.createObjectURL(file));
     setForm(f => ({ ...f, _pendingFile: file }));
     setDirtyFields(s => new Set([...s, "asset_image"]));
@@ -1580,28 +1609,42 @@ function EditAssetDrawer({
           body: fd,
         });
         setUploadingImg(false);
-        if (!up.ok) throw new Error("Image upload failed");
+        if (!up.ok) {
+          const errorText = await up.text();
+          console.error('Upload failed:', up.status, errorText);
+          throw new Error(`Image upload failed: ${up.status} ${errorText}`);
+        }
         const upJson = await up.json();
+        console.log('Upload response:', upJson);
+        console.log('Message type:', typeof upJson.message);
+        console.log('Message value:', upJson.message);
 
         // Frappe returns { message: { file_url: "..." } } across v13/v14/v15.
         // Guard against variant shapes to always extract the URL string.
         const msg = upJson.message;
-        const uploadedUrl: string | null =
-          msg && typeof msg === "object"
-            ? (msg.file_url ?? msg.file_name ?? null)
-            : typeof msg === "string" ? msg : null;
+        let uploadedUrl: string | null = null;
+        
+        if (msg && typeof msg === "object") {
+          uploadedUrl = msg.file_url ?? msg.file_name ?? null;
+        } else if (typeof msg === "string") {
+          uploadedUrl = msg;
+        }
+        
+        console.log('Extracted URL:', uploadedUrl);
 
         if (!uploadedUrl) {
+          console.error('No URL in upload response:', upJson);
           throw new Error("Image uploaded but the server returned no file URL. Please try again.");
         }
         finalImageUrl = uploadedUrl;
+        console.log('Final image URL set to:', finalImageUrl);
       } else if (!imagePreview) {
         // User explicitly removed the image via the × button
         finalImageUrl = "";
       }
 
       const { _pendingFile: _, ...rest } = form;
-      await frappeUpdate<AssetListItem>("CFAM Asset", asset.name, {
+      const updateData = {
         asset_name: rest.asset_name,
         asset_master_category: rest.asset_master_category || undefined,
         asset_category: rest.asset_category || undefined,
@@ -1622,7 +1665,11 @@ function EditAssetDrawer({
         service_group_code: rest.service_group_code || undefined,
         client_code: rest.client_code || undefined,
         asset_image: finalImageUrl,
-      });
+      };
+      
+      console.log('Updating asset with data:', updateData);
+      await frappeUpdate<AssetListItem>("CFAM Asset", asset.name, updateData);
+      console.log('Asset updated successfully');
 
       // 🎉 Professional toast notification for asset update
       sonnerToast.success(
@@ -1655,10 +1702,16 @@ function EditAssetDrawer({
           className: 'animate-slide-in-right',
         }
       );
-
-      onSaved();
-    } catch (e: unknown) { setSaveError((e as Error).message); }
-    finally { setSaving(false); setUploadingImg(false); }
+      onSaved?.();
+    } catch (err: unknown) {
+      console.error('Asset update failed:', err);
+      const errMsg = err instanceof Error ? err.message : "Update failed. Please try again.";
+      setSaveError(errMsg);
+      sonnerToast.error(errMsg);
+    } finally {
+      setSaving(false);
+      setUploadingImg(false);
+    }
   }
 
   const isDirty = dirtyFields.size > 0;
@@ -1815,6 +1868,7 @@ function EditAssetDrawer({
 ═══════════════════════════════════════════ */
 
 function DetailView({ assetName, onRefresh }: { assetName: string; onRefresh?: () => void }) {
+  const { canEdit } = usePermissions();
   const [editKey, setEditKey] = useState(0);
   const [showEdit, setShowEdit] = useState(false);
 
@@ -1862,7 +1916,7 @@ function DetailView({ assetName, onRefresh }: { assetName: string; onRefresh?: (
             <div className="w-12 h-12 rounded-2xl border border-white/50 shadow-sm flex items-center justify-center shrink-0"
               style={{ background: catCfg.bg, color: catCfg.color }}>
               {a.asset_image
-                ? <img src={a.asset_image.startsWith('http') ? a.asset_image : `http://facility.quantcloud.in${a.asset_image}`} className="w-12 h-12 rounded-2xl object-cover" alt="" />
+                ? <img src={getImageUrl(a.asset_image) || ''} className="w-12 h-12 rounded-2xl object-cover" alt="" />
                 : <span className="scale-125">{catCfg.icon}</span>}
             </div>
 
@@ -1893,9 +1947,11 @@ function DetailView({ assetName, onRefresh }: { assetName: string; onRefresh?: (
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <button onClick={() => setShowEdit(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-primary/40 rounded-lg text-primary hover:bg-primary hover:text-primary-foreground transition-all shadow-sm">
-              <Pencil className="w-3 h-3" /> Edit
-            </button>
+            {canEdit("assets") && (
+              <button onClick={() => setShowEdit(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-primary/40 rounded-lg text-primary hover:bg-primary hover:text-primary-foreground transition-all shadow-sm">
+                <Pencil className="w-3 h-3" /> Edit
+              </button>
+            )}
             {/* <button className="p-1.5 rounded-lg hover:bg-muted/60 transition-colors">
               <MoreVertical className="w-4 h-4 text-muted-foreground" />
             </button> */}
@@ -1976,16 +2032,20 @@ function DetailView({ assetName, onRefresh }: { assetName: string; onRefresh?: (
             <div className="relative group inline-block">
               <div className="overflow-hidden rounded-xl border border-border/50 bg-card shadow-sm transition-all duration-300 group-hover:shadow-md">
                 <img 
-                  src={a.asset_image.startsWith('http') ? a.asset_image : `http://facility.quantcloud.in${a.asset_image}`} 
+                  src={getImageUrl(a.asset_image) || ''} 
                   alt={a.asset_name}
                   className="w-auto h-auto max-w-[320px] max-h-[240px] object-cover"
                   onError={(e) => {
-                    e.currentTarget.src = '';
+                    console.error('Image failed to load:', getImageUrl(a.asset_image));
+                    (e.target as HTMLImageElement).style.display = 'none';
                   }}
                 />
                 <div className="absolute inset-0 bg-black/5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                   <button 
-                    onClick={() => window.open(a.asset_image?.startsWith('http') ? a.asset_image : `http://facility.quantcloud.in${a.asset_image}`, '_blank')}
+                    onClick={() => {
+                      const fullUrl = getImageUrl(a.asset_image);
+                      if (fullUrl) window.open(fullUrl, '_blank');
+                    }}
                     className="p-2 bg-white/90 shadow-sm hover:bg-white rounded-lg transition-colors text-foreground transform scale-95 hover:scale-100"
                     title="View full size"
                   >
@@ -2094,6 +2154,9 @@ export default function Assets() {
   const [search, setSearch] = useState("");
   const [expandedProp, setExpandedProp] = useState<string | null>("All Properties");
 
+  const { can, canDo, canEdit, scope } = usePermissions();
+  const scopeFilters = useMemo(() => scope.filtersFor("CFAM Asset"), [scope]);
+
   /* ── Active filter values ── */
   const [filterAssetType, setFilterAssetType]   = useState("");
   const [filterProperty,  setFilterProperty]    = useState("");
@@ -2129,7 +2192,7 @@ export default function Assets() {
       "branch_code", "branch_name", "property_code", "property_name", "zone_code", "sub_zone_code", "base_unit_code",
       "asset_status", "criticality", "client_code", "make_brand", "model",
       "installation_date", "warranty_expiry", "asset_image", "service_group_code", "qr_code_url"],
-    tabFilters, [tab], false, "asset_code asc"
+    [...tabFilters, ...scopeFilters], [tab, scopeFilters], false, "asset_code asc"
   );
 
   const { data: ppms } = useFrappeList<{ asset_code: string; last_done_date?: string; next_due_date?: string }>(
@@ -2241,10 +2304,12 @@ export default function Assets() {
           <button onClick={refetch} className="p-2 rounded-lg hover:bg-muted transition-colors" title="Refresh">
             <RefreshCw className={`w-4 h-4 text-muted-foreground ${loading ? "animate-spin" : ""}`} />
           </button>
-          <button onClick={() => { setShowNewForm(true); setSelectedName(null); }}
-            className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-all shadow-sm">
-            <Plus className="w-4 h-4" /> New Asset
-          </button>
+          {canDo("assets") && (
+            <button onClick={() => { setShowNewForm(true); setSelectedName(null); }}
+              className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-all shadow-sm">
+              <Plus className="w-4 h-4" /> New Asset
+            </button>
+          )}
         </div>
       </div>
 

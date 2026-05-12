@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { usePermissions } from "@/hooks/usePermissions";
+import { useAuth } from "@/contexts/AuthContext";
 import { useSearchParams } from "react-router-dom";
 import {
   Search, Plus, Filter, MapPin, Zap, CheckCircle2, ChevronDown, ChevronUp,
@@ -1898,17 +1900,17 @@ function DetailView({ srName, onClose, onEdit, refreshKey = 0 }: { srName: strin
   const mapSRSourceToWOSource = (srSource: string): string => {
     // Clean and normalize the input
     const cleanSource = (srSource || "").trim();
-    
+
     // For all SR sources being converted to WO, default to "Service Request"
     // since the WO is always created FROM a Service Request
     const validWOSources = ["", "Service Request", "PM Schedule", "Project", "Helpdesk", "Portal", "Phone", "Inspection", "Manual"];
-    
+
     // Only allow direct mapping if the source is already a valid WO source
     if (validWOSources.includes(cleanSource)) {
       console.log(`Direct mapping: SR source "${cleanSource}" is already a valid WO source`);
       return cleanSource;
     }
-    
+
     // For all other SR sources (including Mobile App, Email, On-Site, System, etc.)
     // map to "Service Request" since the WO originates from a Service Request
     console.log(`Fallback mapping: SR source "${cleanSource}" → WO source "Service Request"`);
@@ -2285,6 +2287,8 @@ function DetailView({ srName, onClose, onEdit, refreshKey = 0 }: { srName: strin
 
 export default function Requests() {
   const [searchParams] = useSearchParams();
+  const { scope, canDo } = usePermissions();
+  const scopeFilters = scope.filtersFor("Service Request") as FrappeFilters;
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [tab, setTab] = useState<"all" | "open" | "closed">("all");
@@ -2329,14 +2333,29 @@ export default function Requests() {
         : [...openStatuses, ...closedStatuses]; // ALL
 
 
+  // const { data: srList, loading: listLoading, error: listError, refetch } = useFrappeList<SRListItem>(
+  //   "Service Request",
+  //   ["name", "sr_number", "sr_title", "status", "priority_actual", "photo", "location_full_path",
+  //     "branch_code", "branch_name", "property_code", "property_name", "client_code", "client_name",
+  //     "raised_date", "raised_time", "wo_source", "zone_code",
+  //     "response_sla_status", "resolution_sla_status", "converted_to_wo", "requested_by"],
+  //   [["status", "in", statusFilter.join(",")]],
+  //   [tab]
+  // );
+  const scopeReady = scope.isResolved;
+
   const { data: srList, loading: listLoading, error: listError, refetch } = useFrappeList<SRListItem>(
     "Service Request",
-    ["name", "sr_number", "sr_title", "status", "priority_actual", "photo", "location_full_path",
+    [
+      "name", "sr_number", "sr_title", "status", "priority_actual", "photo", "location_full_path",
       "branch_code", "branch_name", "property_code", "property_name", "client_code", "client_name",
       "raised_date", "raised_time", "wo_source", "zone_code",
-      "response_sla_status", "resolution_sla_status", "converted_to_wo", "requested_by"],
-    [["status", "in", statusFilter.join(",")]],
-    [tab]
+      "response_sla_status", "resolution_sla_status", "converted_to_wo", "requested_by",
+    ],
+    // ↓ merge scope filters with the existing status filter
+    [["status", "in", statusFilter.join(",")], ...scopeFilters],
+    // ↓ add scope to deps
+    [tab, scopeReady, JSON.stringify(scopeFilters)]
   );
 
   /* ── derive unique filter options from live data ── */
@@ -2458,12 +2477,21 @@ export default function Requests() {
               placeholder="Search Requests…"
             />
           </div>
-          <button
+          {/* <button
             onClick={() => { setEditName(null); setShowForm(true); setSelectedName(null); }}
             className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors"
           >
             <Plus className="w-4 h-4" /> New Request
-          </button>
+          </button> */}
+          {canDo("requests") && (
+            <button
+              onClick={() => { setShowForm(true); setEditName(null); }}
+              className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors"
+            >
+              <Plus className="w-4 h-4" /> New Request
+            </button>
+          )}
+
         </div>
       </div>
 

@@ -54,11 +54,12 @@ const NAV_GROUPS: NavGroupDef[] = [
     icon: Layers,
     items: [
       { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard, module: "dashboard" },
-      { label: "IoT Dashboard", path: "/iot-dashboard", icon: Activity, module: "dashboard" },
+      { label: "IoT Dashboard", path: "/iot-dashboard", icon: Activity, module: "iot_dashboard" },
       { label: "Work Orders", path: "/work-orders", icon: ClipboardList, module: "work_orders" },
       { label: "Requests", path: "/requests", icon: Inbox, module: "requests" },
 
       { label: "Assets", path: "/assets", icon: Package, module: "assets" },
+      { label: "Clients", path: "/clients", icon: Users, module: "clients" },
       { label: "Contracts", path: "/contracts", icon: FileText, module: "contracts" },
     ],
   },
