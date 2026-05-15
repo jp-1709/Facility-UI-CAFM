@@ -10,9 +10,6 @@
  * Data: PPM Schedule + Work Orders + Service Requests (Frappe REST)
  */
 
-import { usePermissions } from "@/hooks/usePermissions";
-import { useAuth } from "@/contexts/AuthContext";
-import { getRLSFilters } from "../lib/frappe-sdk";
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ChevronLeft, ChevronRight, Plus, Search, Filter, X, Loader2,
@@ -158,30 +155,30 @@ interface CalEvent {
    COLOUR SYSTEM
 ═══════════════════════════════════════════════════════ */
 const TYPE_PALETTE: Record<EventType, { bg: string; text: string; border: string; dot: string; hex: string }> = {
-  "PPM":              { bg: "bg-violet-500",  text: "text-white",  border: "border-violet-600",  dot: "bg-violet-500",  hex: "#8b5cf6" },
-  "Work Order":       { bg: "bg-blue-500",    text: "text-white",  border: "border-blue-600",    dot: "bg-blue-500",    hex: "#3b82f6" },
-  "Service Request":  { bg: "bg-amber-500",   text: "text-white",  border: "border-amber-600",   dot: "bg-amber-500",   hex: "#f59e0b" },
-  "Inspection":       { bg: "bg-orange-500",  text: "text-white",  border: "border-orange-600",  dot: "bg-orange-500",  hex: "#f97316" },
-  "Facility Rental":  { bg: "bg-teal-500",    text: "text-white",  border: "border-teal-600",    dot: "bg-teal-500",    hex: "#14b8a6" },
-  "Other":            { bg: "bg-slate-500",   text: "text-white",  border: "border-slate-600",   dot: "bg-slate-500",   hex: "#64748b" },
+  "PPM": { bg: "bg-violet-500", text: "text-white", border: "border-violet-600", dot: "bg-violet-500", hex: "#8b5cf6" },
+  "Work Order": { bg: "bg-blue-500", text: "text-white", border: "border-blue-600", dot: "bg-blue-500", hex: "#3b82f6" },
+  "Service Request": { bg: "bg-amber-500", text: "text-white", border: "border-amber-600", dot: "bg-amber-500", hex: "#f59e0b" },
+  "Inspection": { bg: "bg-orange-500", text: "text-white", border: "border-orange-600", dot: "bg-orange-500", hex: "#f97316" },
+  "Facility Rental": { bg: "bg-teal-500", text: "text-white", border: "border-teal-600", dot: "bg-teal-500", hex: "#14b8a6" },
+  "Other": { bg: "bg-slate-500", text: "text-white", border: "border-slate-600", dot: "bg-slate-500", hex: "#64748b" },
 };
 
 const STATUS_PALETTE: Record<string, { chip: string; dot: string }> = {
-  Scheduled:        { chip: "bg-violet-100 text-violet-700",  dot: "bg-violet-500"  },
-  Overdue:          { chip: "bg-red-100 text-red-700",        dot: "bg-red-500"     },
-  "In Progress":    { chip: "bg-blue-100 text-blue-700",      dot: "bg-blue-500"    },
-  Completed:        { chip: "bg-emerald-100 text-emerald-700",dot: "bg-emerald-500" },
-  Open:             { chip: "bg-sky-100 text-sky-700",        dot: "bg-sky-500"     },
-  "Pending Approval":{ chip: "bg-purple-100 text-purple-700", dot: "bg-purple-500"  },
-  Cancelled:        { chip: "bg-gray-100 text-gray-500",      dot: "bg-gray-400"    },
-  Deferred:         { chip: "bg-orange-100 text-orange-700",  dot: "bg-orange-500"  },
+  Scheduled: { chip: "bg-violet-100 text-violet-700", dot: "bg-violet-500" },
+  Overdue: { chip: "bg-red-100 text-red-700", dot: "bg-red-500" },
+  "In Progress": { chip: "bg-blue-100 text-blue-700", dot: "bg-blue-500" },
+  Completed: { chip: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" },
+  Open: { chip: "bg-sky-100 text-sky-700", dot: "bg-sky-500" },
+  "Pending Approval": { chip: "bg-purple-100 text-purple-700", dot: "bg-purple-500" },
+  Cancelled: { chip: "bg-gray-100 text-gray-500", dot: "bg-gray-400" },
+  Deferred: { chip: "bg-orange-100 text-orange-700", dot: "bg-orange-500" },
 };
 
 const PRIORITY_PALETTE: Record<string, string> = {
   "P1 - Critical": "bg-red-500 text-white",
-  "P2 - High":     "bg-orange-400 text-white",
-  "P3 - Medium":   "bg-amber-400 text-black",
-  "P4 - Low":      "bg-green-400 text-white",
+  "P2 - High": "bg-orange-400 text-white",
+  "P3 - Medium": "bg-amber-400 text-black",
+  "P4 - Low": "bg-green-400 text-white",
 };
 
 function typeFromPPM(ppm: PPM): EventType {
@@ -271,7 +268,7 @@ function weekStart(d: Date): Date {
   s.setDate(s.getDate() - (day === 0 ? 6 : day - 1)); s.setHours(0, 0, 0, 0); return s;
 }
 function addDays(d: Date, n: number): Date { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
-function dateKey(d: Date): string { 
+function dateKey(d: Date): string {
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -280,8 +277,8 @@ function dateKey(d: Date): string {
 function isToday(d: Date): boolean { const t = new Date(); return d.getDate() === t.getDate() && d.getMonth() === t.getMonth() && d.getFullYear() === t.getFullYear(); }
 function fmtLong(d: Date): string { return d.toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" }); }
 function fmtShort(d: Date): string { return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }); }
-const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-const DAYS_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const DAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /* ═══════════════════════════════════════════════════════
    MINI HELPERS
@@ -294,7 +291,7 @@ function ErrMsg({ msg }: { msg: string }) {
 }
 function Avatar({ name, size = "sm" }: { name?: string; size?: "sm" | "md" }) {
   const i = (name || "?").split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
-  const cols = ["bg-blue-500","bg-violet-500","bg-teal-500","bg-amber-500","bg-pink-500","bg-orange-500","bg-sky-500","bg-green-500"];
+  const cols = ["bg-blue-500", "bg-violet-500", "bg-teal-500", "bg-amber-500", "bg-pink-500", "bg-orange-500", "bg-sky-500", "bg-green-500"];
   const c = cols[(i.charCodeAt(0) || 0) % cols.length];
   const sz = size === "md" ? "w-7 h-7 text-xs" : "w-5 h-5 text-[10px]";
   return <div className={`${sz} rounded-full ${c} flex items-center justify-center text-white font-bold shrink-0`}>{i}</div>;
@@ -346,7 +343,7 @@ interface QuickCreateProps {
 function QuickCreateModal({ date, time, resourceKey, properties, resources, assets, clients, contracts, onClose, onCreated }: QuickCreateProps) {
   const [title, setTitle] = useState("");
   const [type, setType] = useState<"ppm" | "wo" | "sr">("wo");
-    const [priority, setPriority] = useState("P3 - Medium");
+  const [priority, setPriority] = useState("P3 - Medium");
   const [propertyCode, setPropertyCode] = useState("");
   const [assignedTo, setAssignedTo] = useState(resourceKey || "");
   const [startTime, setStartTime] = useState(time || "09:00");
@@ -412,9 +409,9 @@ function QuickCreateModal({ date, time, resourceKey, properties, resources, asse
   }
 
   const TYPE_OPTS = [
-    { id: "wo" as const,  label: "Work Order",      icon: <Wrench className="w-3.5 h-3.5" />,  color: "text-blue-600 bg-blue-50 border-blue-200" },
-    { id: "ppm" as const, label: "PPM Schedule",    icon: <Package className="w-3.5 h-3.5" />, color: "text-violet-600 bg-violet-50 border-violet-200" },
-    { id: "sr" as const,  label: "Service Request", icon: <Activity className="w-3.5 h-3.5" />,color: "text-amber-600 bg-amber-50 border-amber-200" },
+    { id: "wo" as const, label: "Work Order", icon: <Wrench className="w-3.5 h-3.5" />, color: "text-blue-600 bg-blue-50 border-blue-200" },
+    { id: "ppm" as const, label: "PPM Schedule", icon: <Package className="w-3.5 h-3.5" />, color: "text-violet-600 bg-violet-50 border-violet-200" },
+    { id: "sr" as const, label: "Service Request", icon: <Activity className="w-3.5 h-3.5" />, color: "text-amber-600 bg-amber-50 border-amber-200" },
   ];
 
   return (
@@ -476,7 +473,7 @@ function QuickCreateModal({ date, time, resourceKey, properties, resources, asse
               </div>
             )}
 
-            
+
             {/* PPM Specific Fields */}
             {type === "ppm" && (
               <>
@@ -685,9 +682,9 @@ function FilterSidebar({ filters, onChange, properties, resources, onClose }: Fi
     return arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
   }
 
-  const EVENT_TYPES: EventType[] = ["PPM","Work Order","Service Request","Inspection","Facility Rental","Other"];
-  const STATUSES = ["Scheduled","Overdue","In Progress","Completed","Open","Pending Approval","Cancelled","Deferred"];
-  const PRIORITIES = ["P1 - Critical","P2 - High","P3 - Medium","P4 - Low"];
+  const EVENT_TYPES: EventType[] = ["PPM", "Work Order", "Service Request", "Inspection", "Facility Rental", "Other"];
+  const STATUSES = ["Scheduled", "Overdue", "In Progress", "Completed", "Open", "Pending Approval", "Cancelled", "Deferred"];
+  const PRIORITIES = ["P1 - Critical", "P2 - High", "P3 - Medium", "P4 - Low"];
 
   function applyAndClose() { onChange(local); onClose(); }
   function resetAll() { setLocal(DEFAULT_FILTERS); }
@@ -827,7 +824,7 @@ function MonthView({ events, anchor, onSlotClick, onEventClick, onEventDrop }: {
   onEventDrop: (evId: string, date: string) => void;
 }) {
   const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
-  
+
   const year = anchor.getFullYear(); const month = anchor.getMonth();
   const firstDay = new Date(year, month, 1);
   let gs = new Date(firstDay); const dow = gs.getDay();
@@ -881,7 +878,7 @@ function MonthView({ events, anchor, onSlotClick, onEventClick, onEventDrop }: {
                 <EventBlock key={ev.id} ev={ev} compact onClick={e => { e.stopPropagation(); onEventClick(ev); }} onDragStart={e => e.dataTransfer.setData("text/plain", ev.id)} />
               ))}
               {overflow > 0 && (
-                <button 
+                <button
                   onClick={e => { e.stopPropagation(); toggleDayExpansion(dk); }}
                   className="text-[10px] font-semibold text-primary pl-1 cursor-pointer hover:underline text-left"
                 >
@@ -919,7 +916,7 @@ function WeekView({ events, anchor, onSlotClick, onEventClick, onEventDrop }: {
           <div key={i} className={`py-2 text-center border-r last:border-r-0 border-border ${isToday(day) ? "bg-primary/5" : ""}`}>
             <p className={`text-xs font-bold ${isToday(day) ? "text-primary" : "text-muted-foreground"}`}>{DAYS_SHORT[(day.getDay())]}</p>
             <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-sm font-bold ${isToday(day) ? "bg-primary text-primary-foreground" : "text-foreground"}`}>{day.getDate()}</span>
-            <p className="text-[10px] text-muted-foreground">{day.toLocaleDateString("en-GB",{month:"short"})}</p>
+            <p className="text-[10px] text-muted-foreground">{day.toLocaleDateString("en-GB", { month: "short" })}</p>
           </div>
         ))}
       </div>
@@ -931,7 +928,7 @@ function WeekView({ events, anchor, onSlotClick, onEventClick, onEventDrop }: {
           const dk = dateKey(day);
           const allDay = (byDay[dk] || []).filter(ev => !ev.startTime);
           return (
-            <div key={i} className={`border-r last:border-r-0 border-border px-1 py-1 min-h-[32px] ${isToday(day)?"bg-primary/5":""}`} onClick={() => onSlotClick(dk)}
+            <div key={i} className={`border-r last:border-r-0 border-border px-1 py-1 min-h-[32px] ${isToday(day) ? "bg-primary/5" : ""}`} onClick={() => onSlotClick(dk)}
               onDragOver={e => e.preventDefault()}
               onDrop={e => { e.preventDefault(); const evId = e.dataTransfer.getData("text/plain"); if (evId) onEventDrop(evId, dk); }}>
               {allDay.map(ev => <EventBlock key={ev.id} ev={ev} compact onClick={e => { e.stopPropagation(); onEventClick(ev); }} onDragStart={e => e.dataTransfer.setData("text/plain", ev.id)} />)}
@@ -1233,8 +1230,8 @@ function QuickTypeFilters({ selected, onToggle, onClear }: { selected: EventType
               key={type}
               onClick={() => onToggle(type)}
               className={`group flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 border
-                ${isActive 
-                  ? `${c.bg} ${c.text} ${c.border} shadow-md scale-105 ring-2 ring-offset-2 ring-offset-background ${c.border.replace('border-', 'ring-')}` 
+                ${isActive
+                  ? `${c.bg} ${c.text} ${c.border} shadow-md scale-105 ring-2 ring-offset-2 ring-offset-background ${c.border.replace('border-', 'ring-')}`
                   : "bg-background text-muted-foreground border-border hover:border-primary/40 hover:bg-muted/50 hover:scale-105"}`}
             >
               <span className={`w-2 h-2 rounded-full transition-transform duration-200 ${isActive ? "bg-white scale-110" : c.bg} group-hover:scale-125`} />
@@ -1247,7 +1244,7 @@ function QuickTypeFilters({ selected, onToggle, onClear }: { selected: EventType
         })}
       </div>
       {selected.length > 0 && (
-        <button 
+        <button
           onClick={onClear}
           className="ml-auto flex items-center gap-1 px-2 py-1 text-[10px] font-bold text-primary hover:bg-primary/5 rounded-md transition-colors"
         >
@@ -1272,6 +1269,7 @@ export default function CalendarView() {
   const [selectedEv, setSelectedEv] = useState<CalEvent | null>(null);
   const [quickCreate, setQuickCreate] = useState<{ date: string; time?: string; resourceKey?: string } | null>(null);
 
+  /* range for fetching */
   const wkStart = weekStart(anchor);
   const rangeStart = view === "Month"
     ? new Date(anchor.getFullYear(), anchor.getMonth(), 1)
@@ -1280,56 +1278,32 @@ export default function CalendarView() {
     ? new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0)
     : addDays(wkStart, 6);
   const rs = dateKey(rangeStart); const re = dateKey(rangeEnd);
-  const { scope } = usePermissions();
-  const scopeReady = scope.isResolved;
 
-  const woScopeFilters  = scopeReady ? scope.filtersFor("Work Orders") as FF     : [["name", "=", "__loading__"]] as FF;
-  const srScopeFilters  = scopeReady ? scope.filtersFor("Service Request") as FF  : [["name", "=", "__loading__"]] as FF;
-  const resScopeFilters = scopeReady ? scope.filtersFor("Resource") as FF         : [["name", "=", "__loading__"]] as FF;
-  const ppmScopeFilters: FF =
-    scopeReady
-      ? (scope.scopeRole === "Branch Manager"
-          ? []          // BM sees all PPMs (no branch_code field on PPM Schedule)
-          : (scope.filtersFor("Work Orders") as FF))
-      : [["name", "=", "__loading__"]] as FF;
-  const { data: ppms, loading: pL, error: pE, refetch: pR } = useFetch<PPM>(
-  "PPM Schedule",
-  ["name","pm_id","pm_title","pm_type","frequency","status","asset_code","asset_name",
-   "asset_category","service_group","property_code","property_name","zone_code","sub_zone_code",
-   "base_unit_code","client_code","client_name","contract_code","contract_group",
-   "last_done_date","next_due_date","overdue_by_days","assigned_to","assigned_technician",
-   "ppm_wo_number","planned_duration_hrs","estimated_spares","checklist_reference","notes"],
-  [["next_due_date","between",[rs,re] as unknown as string], ...ppmScopeFilters],
-  [rs, re, view, scopeReady, JSON.stringify(ppmScopeFilters)]
-);
- 
-const { data: wos, loading: wL, error: wE, refetch: wR } = useFetch<WO>(
-  "Work Orders",
-  ["name","wo_number","wo_title","wo_type","status","actual_priority","assigned_to","assigned_technician",
-   "schedule_start_date","schedule_start_time","schedule_end_time","planned_duration_min",
-   "property_code","property_name","zone_code","sub_zone_code","asset_code","asset_name",
-   "service_group","fault_category","client_code","client_name","work_done_notes"],
-  [["schedule_start_date","between",[rs,re] as unknown as string], ...woScopeFilters],
-  [rs, re, view, scopeReady, JSON.stringify(woScopeFilters)]
-);
- 
-const { data: srs, loading: sL, error: sE, refetch: sR } = useFetch<SR>(
-  "Service Request",
-  ["name","sr_title","status","wo_source","fault_category","priority_actual",
-   "property_code","property_name","reported_by","raised_date","raised_time","client_code"],
-  [["raised_date","between",[rs,re] as unknown as string], ...srScopeFilters],
-  [rs, re, view, scopeReady, JSON.stringify(srScopeFilters)]
-);
-  const resources = useSimple<Resource>(
-    "Resource",
-    ["name","resource_name"],
-    resScopeFilters as FF,
-    !scopeReady
-  );
-  const properties = useSimple<Property>("Property", ["name","property_code","property_name","contract_code"], []);
-  const assets = useSimple<Asset>("CFAM Asset", ["name","asset_code","asset_name"], [["asset_status","=","Active"]]);
-  const clients = useSimple<Client>("Client", ["name","client_code","client_name"], []);
-  const contracts = useSimple<Contract>("FM Contract", ["name","contract_title"], [["status","=","Active"]]);
+  /* fetch data */
+  const { data: ppms, loading: pL, error: pE, refetch: pR } = useFetch<PPM>("PPM Schedule",
+    ["name", "pm_id", "pm_title", "pm_type", "frequency", "status", "asset_code", "asset_name", "asset_category", "service_group",
+      "property_code", "property_name", "zone_code", "sub_zone_code", "base_unit_code", "client_code", "client_name",
+      "contract_code", "contract_group", "last_done_date", "next_due_date", "overdue_by_days", "assigned_to",
+      "assigned_technician", "ppm_wo_number", "planned_duration_hrs", "estimated_spares", "checklist_reference", "notes"],
+    [["next_due_date", "between", [rs, re] as unknown as string]], [rs, re, view]);
+
+  const { data: wos, loading: wL, error: wE, refetch: wR } = useFetch<WO>("Work Orders",
+    ["name", "wo_number", "wo_title", "wo_type", "status", "actual_priority", "assigned_to", "assigned_technician",
+      "schedule_start_date", "schedule_start_time", "schedule_end_time", "planned_duration_min",
+      "property_code", "property_name", "zone_code", "sub_zone_code", "asset_code", "asset_name",
+      "service_group", "fault_category", "client_code", "client_name", "work_done_notes"],
+    [["schedule_start_date", "between", [rs, re] as unknown as string]], [rs, re, view]);
+
+  const { data: srs, loading: sL, error: sE, refetch: sR } = useFetch<SR>("Service Request",
+    ["name", "sr_title", "status", "wo_source", "fault_category", "priority_actual",
+      "property_code", "property_name", "reported_by", "raised_date", "raised_time", "client_code"],
+    [["raised_date", "between", [rs, re] as unknown as string]], [rs, re, view]);
+
+  const resources = useSimple<Resource>("Resource", ["name", "resource_name"], []);
+  const properties = useSimple<Property>("Property", ["name", "property_code", "property_name", "contract_code"], []);
+  const assets = useSimple<Asset>("CFAM Asset", ["name", "asset_code", "asset_name"], [["asset_status", "=", "Active"]]);
+  const clients = useSimple<Client>("Client", ["name", "client_code", "client_name"], []);
+  const contracts = useSimple<Contract>("FM Contract", ["name", "contract_title"], [["status", "=", "Active"]]);
 
   /* merge into unified events */
   const allEvents: CalEvent[] = [
@@ -1358,7 +1332,7 @@ const { data: srs, loading: sL, error: sE, refetch: sR } = useFetch<SR>(
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const target = new Date(targetDate);
-      
+
       const ev = allEvents.find(e => e.id === evId);
       if (!ev) return;
 
@@ -1404,10 +1378,10 @@ const { data: srs, loading: sL, error: sE, refetch: sR } = useFetch<SR>(
   const activeFilterCount = filters.buildings.length + filters.eventTypes.length + filters.statuses.length + filters.assignees.length + filters.priorities.length;
 
   const VIEW_OPTS: { id: ViewType; icon: React.ReactNode; label: string }[] = [
-    { id: "Month",    icon: <Calendar className="w-4 h-4" />,    label: "Month"    },
-    { id: "Week",     icon: <LayoutGrid className="w-4 h-4" />,  label: "Week"     },
-    { id: "Grid",     icon: <List className="w-4 h-4" />,        label: "Grid"     },
-    { id: "Resource", icon: <Users className="w-4 h-4" />,       label: "Resource" },
+    { id: "Month", icon: <Calendar className="w-4 h-4" />, label: "Month" },
+    { id: "Week", icon: <LayoutGrid className="w-4 h-4" />, label: "Week" },
+    { id: "Grid", icon: <List className="w-4 h-4" />, label: "Grid" },
+    { id: "Resource", icon: <Users className="w-4 h-4" />, label: "Resource" },
   ];
 
   return (
@@ -1470,21 +1444,14 @@ const { data: srs, loading: sL, error: sE, refetch: sR } = useFetch<SR>(
       </div>
 
       {/* Quick Type Filters */}
-      <QuickTypeFilters 
-        selected={filters.eventTypes} 
+      <QuickTypeFilters
+        selected={filters.eventTypes}
         onToggle={(t) => setFilters(f => ({ ...f, eventTypes: f.eventTypes.includes(t) ? f.eventTypes.filter(x => x !== t) : [...f.eventTypes, t] }))}
         onClear={() => setFilters(f => ({ ...f, eventTypes: [] }))}
       />
 
       {/* errors */}
       {errors.map((e, i) => e && <ErrMsg key={i} msg={e} />)}
-
-      {!scopeReady && (
-        <div className="flex items-center justify-center h-full gap-3 text-muted-foreground">
-          <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm">Resolving access scope…</span>
-        </div>
-      )}
 
       {/* ══ BODY: sidebar + main ══ */}
       <div className="flex flex-1 overflow-hidden">

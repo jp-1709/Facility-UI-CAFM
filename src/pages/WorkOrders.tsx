@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { usePermissions } from "@/hooks/usePermissions";
-import { useAuth } from "@/contexts/AuthContext";
 import {
   Search, Plus, Filter, MapPin, ChevronDown, ChevronUp, ChevronRight,
   MoreVertical, Pencil, X, Loader2, AlertCircle, RefreshCw,
@@ -43,7 +41,7 @@ async function frappeCreate<T>(doctype: string, payload: Partial<T>): Promise<T>
         const messages = JSON.parse(e._server_messages);
         const detail = JSON.parse(messages[0]);
         if (detail.message) msg = detail.message;
-      } catch (err) { /* ignore parse error */ }
+      } catch (err) { }
     }
     throw new Error(msg);
   }
@@ -64,7 +62,7 @@ async function frappeUpdate<T>(doctype: string, name: string, payload: Partial<T
         const messages = JSON.parse(e._server_messages);
         const detail = JSON.parse(messages[0]);
         if (detail.message) msg = detail.message;
-      } catch (err) { /* ignore parse error */ }
+      } catch (err) { }
     }
     throw new Error(msg);
   }
@@ -599,11 +597,7 @@ function PrintModal({ wo, onClose }: { wo: WOListItem; onClose: () => void }) {
   function toggle(id: PrintSectionId) {
     setSelected(prev => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
   }
@@ -932,8 +926,8 @@ function WOCard({ wo, selected, onClick }: { wo: WOListItem; selected: boolean; 
         <div className="flex items-center gap-1 flex-wrap justify-end">
           {dueDateInfo.isOverdue && (
             <span className={`px-2 py-0.5 rounded text-[10px] font-bold text-white ${dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-600' :
-              dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' :
-                'bg-amber-500'
+                dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' :
+                  'bg-amber-500'
               }`}>
               {dueDateInfo.dueType === 'resolution_sla' ? 'SLA Overdue' :
                 dueDateInfo.dueType === 'response_sla' ? 'Response Overdue' :
@@ -1116,9 +1110,9 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
             <div>
               <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Due Date</p>
               <p className={`text-sm font-semibold ${dueDateInfo.urgencyLevel === 'critical' ? 'text-red-500' :
-                dueDateInfo.urgencyLevel === 'high' ? 'text-orange-500' :
-                  dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-500' :
-                    'text-foreground'
+                  dueDateInfo.urgencyLevel === 'high' ? 'text-orange-500' :
+                    dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-500' :
+                      'text-foreground'
                 }`}>
                 {dueDateInfo.dueDate ? (
                   <>
@@ -1138,8 +1132,8 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
                 <span className="text-xs text-muted-foreground">{dueDateInfo.dueDateLabel}</span>
                 {dueDateInfo.isOverdue && (
                   <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold text-white ${dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-500' :
-                    dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' :
-                      'bg-amber-500'
+                      dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' :
+                        'bg-amber-500'
                     }`}>
                     OVERDUE
                   </span>
@@ -1244,25 +1238,25 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
           <Sec id="sla" title="SLA & Schedule Tracking">
             {/* Primary Due Date Summary */}
             <div className={`rounded-xl p-4 border mb-4 ${dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-50 border-red-200' :
-              dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-50 border-orange-200' :
-                dueDateInfo.urgencyLevel === 'medium' ? 'bg-amber-50 border-amber-200' :
-                  'bg-muted/40 border-border'
+                dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-50 border-orange-200' :
+                  dueDateInfo.urgencyLevel === 'medium' ? 'bg-amber-50 border-amber-200' :
+                    'bg-muted/40 border-border'
               }`}>
               <div className="flex items-center justify-between mb-2">
                 <p className="text-sm font-bold text-foreground">{dueDateInfo.dueDateLabel}</p>
                 {dueDateInfo.isOverdue && (
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold text-white ${dueDateInfo.urgencyLevel === 'critical' ? 'bg-red-500' :
-                    dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' :
-                      'bg-amber-500'
+                      dueDateInfo.urgencyLevel === 'high' ? 'bg-orange-500' :
+                        'bg-amber-500'
                     }`}>
                     OVERDUE
                   </span>
                 )}
               </div>
               <p className={`text-lg font-semibold mb-1 ${dueDateInfo.urgencyLevel === 'critical' ? 'text-red-600' :
-                dueDateInfo.urgencyLevel === 'high' ? 'text-orange-600' :
-                  dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-600' :
-                    'text-foreground'
+                  dueDateInfo.urgencyLevel === 'high' ? 'text-orange-600' :
+                    dueDateInfo.urgencyLevel === 'medium' ? 'text-amber-600' :
+                      'text-foreground'
                 }`}>
                 {dueDateInfo.dueDate ? (
                   dueDateInfo.dueType === 'schedule' && wo.schedule_start_date ? (
@@ -1286,7 +1280,7 @@ function DetailView({ woName, onStatusChange, onEdit, onSRClick, refreshKey = 0 
             <div className="grid grid-cols-1 gap-3 mb-2">
               {/* Scheduled Start */}
               <div className={`rounded-xl p-3 border ${dueDateInfo.dueType === 'schedule' && dueDateInfo.isOverdue ?
-                "bg-orange-50 border-orange-200" : "bg-muted/40 border-border"
+                  "bg-orange-50 border-orange-200" : "bg-muted/40 border-border"
                 }`}>
                 <p className="text-xs font-bold text-muted-foreground mb-1">Scheduled Start</p>
                 <p className="text-xs text-foreground">
@@ -1757,7 +1751,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
           const msg = upJson.message;
           const newUrl = msg && typeof msg === 'object' ? (msg.file_url ?? msg.file_name ?? null) : typeof msg === 'string' ? msg : null;
           if (newUrl) {
-            try { await frappeUpdate('Work Orders', doc.name, { before_photo: newUrl }); } catch (err) { console.error("Failed to update before_photo", err); }
+            try { await frappeUpdate('Work Orders', doc.name, { before_photo: newUrl }); } catch (err) { }
           }
         } else {
           throw new Error('Image upload failed');
@@ -1785,7 +1779,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
           const msg = upJson.message;
           const newUrl = msg && typeof msg === 'object' ? (msg.file_url ?? msg.file_name ?? null) : typeof msg === 'string' ? msg : null;
           if (newUrl) {
-            try { await frappeUpdate('Work Orders', doc.name, { after_photo: newUrl }); } catch (err) { console.error("Failed to update after_photo", err); }
+            try { await frappeUpdate('Work Orders', doc.name, { after_photo: newUrl }); } catch (err) { }
           }
         } else {
           throw new Error('Image upload failed');
@@ -1857,15 +1851,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
           />
           {current && (
             <button type="button"
-              onClick={() => {
-                if (onChangeOverride) {
-                  onChangeOverride("");
-                } else {
-                  set(fk)("");
-                }
-                setQuery("");
-                setOpen(false);
-              }}
+              onClick={() => { onChangeOverride ? onChangeOverride("") : set(fk)(""); setQuery(""); setOpen(false); }}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
               <X className="w-3.5 h-3.5" />
             </button>
@@ -1877,15 +1863,7 @@ function WOForm({ editName, onClose, onSaved }: { editName?: string; onClose: ()
               ? <div className="px-3 py-3 text-xs text-muted-foreground text-center">No results found</div>
               : filtered.map(o => (
                 <button key={o.v} type="button"
-                  onClick={() => {
-                    if (onChangeOverride) {
-                      onChangeOverride(o.v);
-                    } else {
-                      set(fk)(o.v);
-                    }
-                    setOpen(false);
-                    setQuery("");
-                  }}
+                  onClick={() => { onChangeOverride ? onChangeOverride(o.v) : set(fk)(o.v); setOpen(false); setQuery(""); }}
                   className={`w-full text-left px-3 py-2.5 text-sm hover:bg-muted transition-colors flex items-center justify-between gap-2
                     ${current === o.v ? "bg-primary/10 text-primary font-semibold" : "text-foreground"}`}>
                   <span className="truncate">{o.l}</span>
@@ -2231,13 +2209,6 @@ const DONE_STATUSES = ["Completed", "Closed", "Cancelled"];
 
 export default function WorkOrders() {
   const navigate = useNavigate();
-  const { scope, canDo } = usePermissions();
-  const { user, userScope } = useAuth();
-
-  const scopeFilters: FF = scope.isResolved
-    ? (scope.filtersFor("Work Orders") as FF)
-    : [["name", "=", "__loading__"]]; // matches nothing → empty list while resolving
-
   const [tab, setTab] = useState<ListTab>("All");
   const [sort, setSort] = useState<SortKey>("Priority: Highest First");
   const [showSort, setShowSort] = useState(false);
@@ -2263,16 +2234,7 @@ export default function WorkOrders() {
   const [filterStatus, setFilterStatus] = useState("");
 
 
-const technicianNotLinked =
-  userScope.scopeRole === "Technician" &&
-  userScope.isResolved &&
-  !userScope.hasLinkedResource;
- 
-// If not linked, override with a no-match filter so nothing loads
-const effectiveScopeFilters: FF = technicianNotLinked
-  ? [["name", "=", "__unlinked__"]]
-  : scopeFilters;
- 
+
 
 
 
@@ -2287,60 +2249,34 @@ const effectiveScopeFilters: FF = technicianNotLinked
     return () => document.removeEventListener("mousedown", h);
   }, [activeFilterKey]);
 
-  
-const statusFilter: FF = [
-  [
-    "status",
-    "in",
-    (
-      tab === "To Do"
-        ? TODO_STATUSES
-        : tab === "Done"
-          ? DONE_STATUSES
-          : [...TODO_STATUSES, ...DONE_STATUSES]
-    ).join(","),
-  ],
-];
+  const statusFilter: FF = [
+    [
+      "status",
+      "in",
+      (
+        tab === "To Do"
+          ? TODO_STATUSES
+          : tab === "Done"
+            ? DONE_STATUSES
+            : [...TODO_STATUSES, ...DONE_STATUSES]
+      ).join(","),
+    ],
+  ];
 
-
-
-  // Wait for scope to resolve before fetching — avoids a flash of all data
-  // for scoped roles. Admin resolves instantly (isResolved = true on login).
-  const scopeReady = scope.isResolved;
-const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
-  "Work Orders",
-  [
-    "name", "wo_number", "wo_title", "wo_type", "wo_sub_type", "wo_source", "status",
-    "actual_priority", "default_priority", "client_code", "client_name",
-    "branch_code", "branch_name", "property_code", "property_name",
-    "zone_code", "sub_zone_code", "base_unit_code", "location_full_path",
-    "asset_code", "asset_name",
-    "assigned_to", "assigned_technician", "secondary_tech", "secondary_technician_name",
-    "schedule_start_date", "schedule_start_time", "planned_duration_min",
-    "labor_hours", "spares_amount", "service_amount", "total_wo_cost",
-    "response_sla_breach", "resolution_sla_breach", "sr_number", "creation", "modified",
-    "initiator_type", "requested_by",
-  ],
-  // ↓ The combined filter. effectiveScopeFilters never leaks other users' data.
-  [...statusFilter, ...effectiveScopeFilters],
-  // ↓ Re-fetch when tab changes OR when scope finishes resolving
-  [tab, scope.isResolved, userScope.hasLinkedResource, JSON.stringify(effectiveScopeFilters)]
-);
-
-  // const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
-  //   "Work Orders",
-  //   ["name", "wo_number", "wo_title", "wo_type", "wo_sub_type", "wo_source", "status",
-  //     "actual_priority", "default_priority", "client_code", "client_name",
-  //     "branch_code", "branch_name", "property_code", "property_name",
-  //     "zone_code", "sub_zone_code", "base_unit_code", "location_full_path",
-  //     "asset_code", "asset_name",
-  //     "assigned_to", "assigned_technician", "secondary_tech", "secondary_technician_name",
-  //     "schedule_start_date", "schedule_start_time", "planned_duration_min",
-  //     "labor_hours", "spares_amount", "service_amount", "total_wo_cost",
-  //     "response_sla_breach", "resolution_sla_breach", "sr_number", "creation", "modified",
-  //     "initiator_type", "requested_by"],
-  //   statusFilter, [tab]
-  // );
+  const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
+    "Work Orders",
+    ["name", "wo_number", "wo_title", "wo_type", "wo_sub_type", "wo_source", "status",
+      "actual_priority", "default_priority", "client_code", "client_name",
+      "branch_code", "branch_name", "property_code", "property_name",
+      "zone_code", "sub_zone_code", "base_unit_code", "location_full_path",
+      "asset_code", "asset_name",
+      "assigned_to", "assigned_technician", "secondary_tech", "secondary_technician_name",
+      "schedule_start_date", "schedule_start_time", "planned_duration_min",
+      "labor_hours", "spares_amount", "service_amount", "total_wo_cost",
+      "response_sla_breach", "resolution_sla_breach", "sr_number", "creation", "modified",
+      "initiator_type", "requested_by"],
+    statusFilter, [tab]
+  );
 
   /* ── derive unique filter options from live data ── */
   const allBranches = useMemo(() => Array.from(new Set(allWOs.map((wo) => wo.branch_name || wo.branch_code).filter(Boolean))) as string[], [allWOs]);
@@ -2379,37 +2315,14 @@ const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
     return (a.schedule_start_date || "").localeCompare(b.schedule_start_date || "");
   });
 
-  const groups: [string, WOListItem[]][] = (() => {
-  if (scope.scopeRole === "Technician") {
-    return [["My Work Orders", sorted]] as [string, WOListItem[]][];
-  }
-  if (scope.scopeRole === "Supervisor" || scope.scopeRole === "Branch Manager") {
-    const active = sorted.filter(wo =>
-      ["In Progress", "Assigned", "Pending Parts", "Pending Approval"].includes(wo.status ?? "")
-    );
-    const open = sorted.filter(wo =>
-      ["Draft", "Open", "Not Dispatched"].includes(wo.status ?? "")
-    );
-    return [
-      ["Active / In Progress", active],
-      ["Open / New", open],
-    ] as [string, WOListItem[]][];
-  }
-  // Admin: keep meaningful groupings
-  const active = sorted.filter(wo =>
-    ["In Progress", "Assigned", "Pending Parts", "Pending Approval"].includes(wo.status ?? "")
-  );
-  const open = sorted.filter(wo =>
-    ["Draft", "Open", "Not Dispatched"].includes(wo.status ?? "")
-  );
-  const other = sorted.filter(wo => !active.includes(wo) && !open.includes(wo));
-  return [
-    ["Active / In Progress", active],
-    ["Open / New", open],
-    ["Other", other],
-  ] as [string, WOListItem[]][];
-})();
-
+  const myWOs = sorted.filter((_, i) => i % 3 === 0);
+  const teamWOs = sorted.filter((_, i) => i % 3 === 1);
+  const restWOs = sorted.filter((_, i) => i % 3 === 2);
+  const groups: [string, WOListItem[]][] = [
+    ["Assigned to You", myWOs],
+    ["Assigned to your Teams", teamWOs],
+    ["All Open Work Orders", restWOs],
+  ];
 
   const toggleGroup = (k: string) => setCollapsedGroups(p => ({ ...p, [k]: !p[k] }));
 
@@ -2432,15 +2345,6 @@ const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
   return (
     <div className="flex flex-col h-full">
       {/* TOP BAR */}
-      {technicianNotLinked && (
-  <div className="flex items-center gap-3 px-5 py-3 bg-amber-50 border-b border-amber-200 text-amber-800 text-sm">
-    <AlertCircle className="w-4 h-4 shrink-0 text-amber-500" />
-    <span>
-      <b>Account not linked:</b> Your user account is not connected to a Technician profile.
-      Please ask your administrator to set <code className="bg-amber-100 px-1 rounded">user_id = {user?.email ?? "your email"}</code> on your Resource record in Frappe.
-    </span>
-  </div>
-)}
       <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-card">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-foreground">Work Orders</h1>
@@ -2460,17 +2364,12 @@ const { data: allWOs, loading, error, refetch } = useList<WOListItem>(
               className="pl-9 pr-4 py-2 border border-border rounded-lg text-sm bg-background w-64 focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="Search Work Orders…" />
           </div>
+          <button onClick={() => { setShowForm(true); setEditName(undefined); setSelectedName(null); }}
+            className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors">
+            <Plus className="w-4 h-4" /> New Work Order
+          </button>
         </div>
       </div>
-      {canDo("work_orders") && (
-        <button
-          onClick={() => { setShowForm(true); setEditName(undefined); setSelectedName(null); }}
-          className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors"
-        >
-          <Plus className="w-4 h-4" /> New Work Order
-        </button>
-      )}
-
 
       {/* ══ DYNAMIC FILTER BAR ══ */}
       <div className="flex items-center gap-2 px-5 py-2 border-b border-border bg-card flex-wrap relative z-40" ref={filterRef}>

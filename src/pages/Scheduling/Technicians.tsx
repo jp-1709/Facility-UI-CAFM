@@ -1,7 +1,8 @@
 /**
  * Technicians.tsx  ·  CAFM Facility-UI
  * Full technician roster + profile + skills/certifications management.
- * Scope-aware: Technician sees self, Supervisor sees team, BM sees branch, Admin sees all.
+ * 100% dynamic — all data from Frappe REST API via resource.json schema.
+ * Schema references: Resource (parent) + Resource Skill (child table).
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -11,9 +12,8 @@ import {
   Wrench, Star, CheckCircle2, AlertTriangle, Pencil, MoreVertical,
   Activity, Building2, Zap, Tag, Calendar, Check, Trash2,
   Upload, Camera, Users, Filter, ChevronLeft, Copy, ExternalLink,
-  BadgeCheck, Layers, Smartphone, BookOpen, UserCheck, Lock,
+  BadgeCheck, Layers, Smartphone, BookOpen,
 } from "lucide-react";
-import { usePermissions } from "@/hooks/usePermissions";
 
 /* ════════════════════════════════════════════════════════════════
    GLOBAL CSS  (injected once)
@@ -107,7 +107,7 @@ async function fCreate<T>(doctype: string, payload: Partial<T>): Promise<T> {
     headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": csrf() },
     body: JSON.stringify(payload),
   });
-  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error((e as {exc_type?:string}).exc_type || "Save failed"); }
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error((e as { exc_type?: string }).exc_type || "Save failed"); }
   return (await r.json()).data as T;
 }
 
@@ -117,7 +117,7 @@ async function fUpdate<T>(doctype: string, name: string, payload: Partial<T>): P
     headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": csrf() },
     body: JSON.stringify(payload),
   });
-  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error((e as {exc_type?:string}).exc_type || "Update failed"); }
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error((e as { exc_type?: string }).exc_type || "Update failed"); }
   return (await r.json()).data as T;
 }
 
@@ -144,13 +144,14 @@ async function uploadFile(file: File, doctype: string, docname: string, fieldnam
 }
 
 /* ════════════════════════════════════════════════════════════════
-   TYPES  (mirrors updated resource.json exactly)
+   TYPES  (mirrors resource.json + resource_skill.json exactly)
 ════════════════════════════════════════════════════════════════ */
 interface ResourceSkill {
   name?: string;
   service_group_code: string;
   certification?: string;
   expiry_date?: string;
+  /** local-only temp id for unsaved rows */
   _localId?: string;
 }
 
@@ -170,21 +171,12 @@ interface Resource {
   user_id?: string;
   branch_code?: string;
   branch_name?: string;
-  /** Staff code of this technician's supervisor (Link → Resource) */
-  supervisor_code?: string;
-  supervisor_name?: string;
   primary_area_group?: string;
   secondary_area_groups?: string;
   is_active?: 0 | 1;
   skills?: ResourceSkill[];
+  /** profile photo — Frappe Attach Image field (add to schema if needed) */
   profile_image?: string;
-  technicians?: ResourceTechnician[];
-}
-
-interface ResourceTechnician {
-  name?: string;
-  staff_code: string;
-  resource_name: string;
 }
 
 type ResourceListItem = Omit<Resource, "skills">;
@@ -192,29 +184,21 @@ type ResourceListItem = Omit<Resource, "skills">;
 /* ════════════════════════════════════════════════════════════════
    HOOKS
 ════════════════════════════════════════════════════════════════ */
-
-/**
- * useList — fetches the Resource list with the given scope filters.
- * Filters are built by the main component from usePermissions().scope.filtersFor("Resource").
- * @param scopeFilters — Frappe filter array ([] for admin, scoped for others)
- * @param deps — additional deps that trigger a re-fetch (refreshKey, etc.)
- */
-function useList(scopeFilters: FF, deps: unknown[]) {
-  const [data, setData]       = useState<ResourceListItem[]>([]);
+function useList(deps: unknown[]) {
+  const [data, setData] = useState<ResourceListItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const fetch_ = useCallback(async () => {
     setLoading(true); setError(null);
     try {
       setData(await fGet<ResourceListItem>("Resource", [
-        "name","staff_code","resource_name","designation","department",
-        "employment_type","ps_type","shift","allocation_mode","is_pda_user",
-        "phone","email","user_id","branch_code","branch_name",
-        "supervisor_code","supervisor_name",
-        "primary_area_group","secondary_area_groups",
-        "is_active","profile_image",
-      ], scopeFilters, 500, "resource_name asc"));
+        "name", "staff_code", "resource_name", "designation", "department",
+        "employment_type", "ps_type", "shift", "allocation_mode", "is_pda_user",
+        "phone", "email", "user_id", "branch_code", "branch_name",
+        "primary_area_group", "secondary_area_groups",
+        "is_active", "profile_image",
+      ], [], 500, "resource_name asc"));
     } catch (e: unknown) { setError((e as Error).message); }
     finally { setLoading(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -225,9 +209,9 @@ function useList(scopeFilters: FF, deps: unknown[]) {
 }
 
 function useDoc(name: string, refreshKey = 0) {
-  const [data, setData]       = useState<Resource | null>(null);
+  const [data, setData] = useState<Resource | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!name) return;
@@ -254,69 +238,36 @@ function useSimple<T>(doctype: string, fields: string[], filters: FF = [], skip 
   return data;
 }
 
-function useSupervisedTechnicians(supervisorStaffCode?: string) {
-  const [data, setData] = useState<ResourceListItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!supervisorStaffCode) {
-      setData([]);
-      return;
-    }
-    
-    setLoading(true); setError(null);
-    fGet<ResourceListItem>("Resource", [
-      "name","staff_code","resource_name","designation","department",
-      "employment_type","ps_type","shift","allocation_mode","is_pda_user",
-      "phone","email","user_id","branch_code","branch_name",
-      "supervisor_code","supervisor_name",
-      "primary_area_group","secondary_area_groups",
-      "is_active","profile_image",
-    ], [["supervisor_code", "=", supervisorStaffCode], ["designation", "!=", "Supervisor"]], 500, "resource_name asc")
-      .then(setData)
-      .catch((e: unknown) => setError((e as Error).message))
-      .finally(() => setLoading(false));
-  }, [supervisorStaffCode]);
-
-  return { data, loading, error };
-}
-
 /* ════════════════════════════════════════════════════════════════
-   CONFIG MAPS
+   CONFIG MAPS  (all derived from schema options)
 ════════════════════════════════════════════════════════════════ */
-const DEPARTMENTS  = ["Technical","Soft Services","Operations","Management","Admin","HSEQ"];
-const EMP_TYPES    = ["Staff","Subcontractor","Casual","Third Party"];
-const PS_TYPES     = ["Primary","Secondary","Float"];
-const SHIFTS       = ["Day Shift","Night Shift","24 Hours Shift","Rotating"];
-const ALLOC_MODES  = ["Manual","Auto","Pool"];
-/** Matches the Select options in updated resource.json */
-const DESIGNATIONS = [
-  "Supervisor","Lead Technician","Technician",
-  "Sub-Contractor","Helpers","Driver","Admin Staff","HSEQ Officer","Site Coordinator",
-];
+const DEPARTMENTS = ["Technical", "Soft Services", "Operations", "Management", "Admin", "HSEQ"];
+const EMP_TYPES = ["Staff", "Subcontractor", "Casual", "Third Party"];
+const PS_TYPES = ["Primary", "Secondary", "Float"];
+const SHIFTS = ["Day Shift", "Night Shift", "24 Hours Shift", "Rotating"];
+const ALLOC_MODES = ["Manual", "Auto", "Pool"];
 
 const DEPT_CFG: Record<string, { color: string; bg: string; icon: React.ReactNode }> = {
-  "Technical":     { color: "#3b82f6", bg: "#eff6ff", icon: <Wrench className="w-3.5 h-3.5" /> },
-  "Soft Services": { color: "#8b5cf6", bg: "#f5f3ff", icon: <Star   className="w-3.5 h-3.5" /> },
-  "Operations":    { color: "#f59e0b", bg: "#fffbeb", icon: <Activity className="w-3.5 h-3.5" /> },
-  "Management":    { color: "#10b981", bg: "#ecfdf5", icon: <Building2 className="w-3.5 h-3.5" /> },
-  "Admin":         { color: "#6b7280", bg: "#f9fafb", icon: <Tag     className="w-3.5 h-3.5" /> },
-  "HSEQ":          { color: "#ef4444", bg: "#fef2f2", icon: <Shield  className="w-3.5 h-3.5" /> },
+  "Technical": { color: "#3b82f6", bg: "#eff6ff", icon: <Wrench className="w-3.5 h-3.5" /> },
+  "Soft Services": { color: "#8b5cf6", bg: "#f5f3ff", icon: <Star className="w-3.5 h-3.5" /> },
+  "Operations": { color: "#f59e0b", bg: "#fffbeb", icon: <Activity className="w-3.5 h-3.5" /> },
+  "Management": { color: "#10b981", bg: "#ecfdf5", icon: <Building2 className="w-3.5 h-3.5" /> },
+  "Admin": { color: "#6b7280", bg: "#f9fafb", icon: <Tag className="w-3.5 h-3.5" /> },
+  "HSEQ": { color: "#ef4444", bg: "#fef2f2", icon: <Shield className="w-3.5 h-3.5" /> },
 };
 
 const EMP_CFG: Record<string, { cls: string; dot: string }> = {
-  "Staff":        { cls: "bg-emerald-100 text-emerald-700 border-emerald-200", dot: "#10b981" },
-  "Subcontractor":{ cls: "bg-blue-100 text-blue-700 border-blue-200",         dot: "#3b82f6" },
-  "Casual":       { cls: "bg-amber-100 text-amber-700 border-amber-200",       dot: "#f59e0b" },
-  "Third Party":  { cls: "bg-violet-100 text-violet-700 border-violet-200",   dot: "#8b5cf6" },
+  "Staff": { cls: "bg-emerald-100 text-emerald-700 border-emerald-200", dot: "#10b981" },
+  "Subcontractor": { cls: "bg-blue-100 text-blue-700 border-blue-200", dot: "#3b82f6" },
+  "Casual": { cls: "bg-amber-100 text-amber-700 border-amber-200", dot: "#f59e0b" },
+  "Third Party": { cls: "bg-violet-100 text-violet-700 border-violet-200", dot: "#8b5cf6" },
 };
 
 const SHIFT_CFG: Record<string, { icon: React.ReactNode; color: string }> = {
-  "Day Shift":      { icon: <Zap className="w-3 h-3" />,      color: "#f59e0b" },
-  "Night Shift":    { icon: <Star className="w-3 h-3" />,     color: "#6366f1" },
-  "24 Hours Shift": { icon: <Clock className="w-3 h-3" />,    color: "#ef4444" },
-  "Rotating":       { icon: <RefreshCw className="w-3 h-3" />,color: "#0891b2" },
+  "Day Shift": { icon: <Zap className="w-3 h-3" />, color: "#f59e0b" },
+  "Night Shift": { icon: <Star className="w-3 h-3" />, color: "#6366f1" },
+  "24 Hours Shift": { icon: <Clock className="w-3 h-3" />, color: "#ef4444" },
+  "Rotating": { icon: <RefreshCw className="w-3 h-3" />, color: "#0891b2" },
 };
 
 function getInitials(name: string) {
@@ -324,8 +275,8 @@ function getInitials(name: string) {
 }
 
 const AVATAR_COLORS = [
-  "#4f46e5","#7c3aed","#0891b2","#059669","#d97706","#dc2626",
-  "#db2777","#0284c7","#65a30d","#9333ea",
+  "#4f46e5", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626",
+  "#db2777", "#0284c7", "#65a30d", "#9333ea",
 ];
 function avatarColor(name: string) {
   return AVATAR_COLORS[(name.charCodeAt(0) || 0) % AVATAR_COLORS.length];
@@ -365,8 +316,8 @@ function ErrMsg({ msg, onRetry }: { msg: string; onRetry?: () => void }) {
   );
 }
 
-function Avatar({ name, img, size = "md", ring }: { name: string; img?: string; size?: "sm"|"md"|"lg"|"xl"; ring?: boolean }) {
-  const sz = { sm:"w-8 h-8 text-xs", md:"w-10 h-10 text-sm", lg:"w-14 h-14 text-base", xl:"w-20 h-20 text-xl" }[size];
+function Avatar({ name, img, size = "md", ring }: { name: string; img?: string; size?: "sm" | "md" | "lg" | "xl"; ring?: boolean }) {
+  const sz = { sm: "w-8 h-8 text-xs", md: "w-10 h-10 text-sm", lg: "w-14 h-14 text-base", xl: "w-20 h-20 text-xl" }[size];
   const ringCls = ring ? "ring-4 ring-white shadow-md" : "";
   const bg = avatarColor(name);
   const imgSrc = img ? (img.startsWith("http") ? img : `http://facility.quantcloud.in${img}`) : null;
@@ -409,7 +360,7 @@ function ActiveDot({ active }: { active?: 0 | 1 }) {
 }
 
 function SkillPill({ skill }: { skill: ResourceSkill }) {
-  const expired     = isCertExpired(skill.expiry_date);
+  const expired = isCertExpired(skill.expiry_date);
   const expiringSoon = isCertExpiringSoon(skill.expiry_date);
   return (
     <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm transition-all
@@ -432,49 +383,6 @@ function SkillPill({ skill }: { skill: ResourceSkill }) {
           </p>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════
-   SCOPE BANNER  — shows what data is visible and why
-════════════════════════════════════════════════════════════════ */
-interface ScopeBannerProps {
-  scopeRole: string;
-  resourceName?: string;
-  totalVisible: number;
-  hasLink: boolean;
-}
-function ScopeBanner({ scopeRole, resourceName, totalVisible, hasLink }: ScopeBannerProps) {
-  if (scopeRole === "Admin") return null;
-
-  // Warning: scoped role with no linked doc
-  if (!hasLink) {
-    return (
-      <div className="flex items-center gap-3 px-5 py-2.5 bg-amber-50 border-b border-amber-200 text-amber-800 text-xs">
-        <AlertCircle className="w-4 h-4 shrink-0 text-amber-500" />
-        <span>
-          <b>Account not linked:</b>{" "}
-          {scopeRole === "Branch Manager"
-            ? "No Branch document has your email set as System User. Contact admin to link your Branch."
-            : "No Resource document has your email set as System User. Contact admin to link your Resource record."}
-        </span>
-      </div>
-    );
-  }
-
-  const config = {
-    Technician:      { icon: <User className="w-3.5 h-3.5" />,      color: "bg-violet-50 border-violet-200 text-violet-800", label: `Viewing your own profile` },
-    Supervisor:      { icon: <UserCheck className="w-3.5 h-3.5" />, color: "bg-blue-50 border-blue-200 text-blue-800",       label: `Viewing your team — ${totalVisible} technician${totalVisible !== 1 ? "s" : ""} under ${resourceName || "you"}` },
-    "Branch Manager":{ icon: <Building2 className="w-3.5 h-3.5" />, color: "bg-emerald-50 border-emerald-200 text-emerald-800", label: `Viewing all technicians in ${resourceName || "your branch"} — ${totalVisible} resource${totalVisible !== 1 ? "s" : ""}` },
-  }[scopeRole] || null;
-
-  if (!config) return null;
-
-  return (
-    <div className={`flex items-center gap-2.5 px-5 py-2 border-b text-xs font-medium ${config.color}`}>
-      {config.icon}
-      <span>{config.label}</span>
     </div>
   );
 }
@@ -525,16 +433,16 @@ function TechCard({ t, selected, onClick }: { t: ResourceListItem; selected: boo
    STATS BAR
 ════════════════════════════════════════════════════════════════ */
 function StatsBar({ data }: { data: ResourceListItem[] }) {
-  const total  = data.length;
+  const total = data.length;
   const active = data.filter(t => t.is_active).length;
   const mobile = data.filter(t => t.is_pda_user).length;
   const subcon = data.filter(t => t.employment_type === "Subcontractor").length;
 
   const items = [
-    { label: "Total",          value: total,  color: "#6366f1", bg: "#eef2ff", icon: <Users className="w-4 h-4" /> },
-    { label: "Active",         value: active, color: "#10b981", bg: "#ecfdf5", icon: <CheckCircle2 className="w-4 h-4" /> },
-    { label: "Mobile Users",   value: mobile, color: "#8b5cf6", bg: "#f5f3ff", icon: <Smartphone  className="w-4 h-4" /> },
-    { label: "Subcontractors", value: subcon, color: "#f59e0b", bg: "#fffbeb", icon: <Building2    className="w-4 h-4" /> },
+    { label: "Total", value: total, color: "#6366f1", bg: "#eef2ff", icon: <Users className="w-4 h-4" /> },
+    { label: "Active", value: active, color: "#10b981", bg: "#ecfdf5", icon: <CheckCircle2 className="w-4 h-4" /> },
+    { label: "Mobile Users", value: mobile, color: "#8b5cf6", bg: "#f5f3ff", icon: <Smartphone className="w-4 h-4" /> },
+    { label: "Subcontractors", value: subcon, color: "#f59e0b", bg: "#fffbeb", icon: <Building2 className="w-4 h-4" /> },
   ];
 
   return (
@@ -557,7 +465,7 @@ function StatsBar({ data }: { data: ResourceListItem[] }) {
 }
 
 /* ════════════════════════════════════════════════════════════════
-   SKILL ROW EDITOR
+   SKILL ROW EDITOR  (used in New / Edit form)
 ════════════════════════════════════════════════════════════════ */
 function SkillRowEditor({
   skills, onChange,
@@ -572,7 +480,9 @@ function SkillRowEditor({
     setNewSkill({ service_group_code: "", certification: "", expiry_date: "" });
   }
 
-  function removeRow(idx: number) { onChange(skills.filter((_, i) => i !== idx)); }
+  function removeRow(idx: number) {
+    onChange(skills.filter((_, i) => i !== idx));
+  }
 
   function updateRow(idx: number, k: keyof ResourceSkill, v: string) {
     onChange(skills.map((s, i) => i === idx ? { ...s, [k]: v } : s));
@@ -583,23 +493,25 @@ function SkillRowEditor({
       <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground mb-3 flex items-center gap-2">
         <Award className="w-3.5 h-3.5 text-primary" /> Skills &amp; Certifications
       </p>
+
+      {/* existing rows */}
       {skills.length > 0 && (
         <div className="space-y-2 mb-3">
           {skills.map((sk, idx) => {
-            const expired     = isCertExpired(sk.expiry_date);
+            const expired = isCertExpired(sk.expiry_date);
             const expiringSoon = isCertExpiringSoon(sk.expiry_date);
             return (
               <div key={sk._localId || sk.name || idx}
                 className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm
                   ${expired ? "border-red-200 bg-red-50" : expiringSoon ? "border-amber-200 bg-amber-50" : "border-border bg-muted/20"}`}>
                 <Award className={`w-4 h-4 shrink-0 ${expired ? "text-red-400" : expiringSoon ? "text-amber-500" : "text-primary"}`} />
-                <input value={sk.service_group_code} onChange={e => updateRow(idx, "service_group_code", e.target.value)}
+                <input key={`service-${sk._localId || sk.name || idx}`} value={sk.service_group_code} onChange={e => updateRow(idx, "service_group_code", e.target.value)}
                   placeholder="Service Group Code *"
                   className="flex-1 min-w-0 text-xs bg-transparent border-0 outline-none font-semibold text-foreground placeholder:text-muted-foreground" />
-                <input value={sk.certification || ""} onChange={e => updateRow(idx, "certification", e.target.value)}
+                <input key={`cert-${sk._localId || sk.name || idx}`} value={sk.certification || ""} onChange={e => updateRow(idx, "certification", e.target.value)}
                   placeholder="Certification"
                   className="flex-1 min-w-0 text-xs bg-transparent border-0 outline-none text-foreground placeholder:text-muted-foreground" />
-                <input type="date" value={sk.expiry_date || ""} onChange={e => updateRow(idx, "expiry_date", e.target.value)}
+                <input key={`expiry-${sk._localId || sk.name || idx}`} type="date" value={sk.expiry_date || ""} onChange={e => updateRow(idx, "expiry_date", e.target.value)}
                   className="text-xs bg-transparent border-0 outline-none text-muted-foreground w-28" />
                 {expired && <span className="text-[9px] font-bold text-red-500 bg-red-100 px-1.5 py-0.5 rounded shrink-0">Expired</span>}
                 {expiringSoon && !expired && <span className="text-[9px] font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded shrink-0">Soon</span>}
@@ -611,15 +523,17 @@ function SkillRowEditor({
           })}
         </div>
       )}
+
+      {/* add row */}
       <div className="flex items-center gap-2 p-3 border-2 border-dashed border-border rounded-xl bg-muted/10 hover:border-primary/40 transition-colors">
         <Plus className="w-4 h-4 text-muted-foreground shrink-0" />
-        <input value={newSkill.service_group_code} onChange={e => setNewSkill(s => ({ ...s, service_group_code: e.target.value }))}
+        <input key="new-service" value={newSkill.service_group_code} onChange={e => setNewSkill(s => ({ ...s, service_group_code: e.target.value }))}
           placeholder="Service Group Code *" onKeyDown={e => e.key === "Enter" && addRow()}
           className="flex-1 min-w-0 text-xs bg-transparent border-0 outline-none text-foreground placeholder:text-muted-foreground" />
-        <input value={newSkill.certification || ""} onChange={e => setNewSkill(s => ({ ...s, certification: e.target.value }))}
+        <input key="new-cert" value={newSkill.certification || ""} onChange={e => setNewSkill(s => ({ ...s, certification: e.target.value }))}
           placeholder="Certification" onKeyDown={e => e.key === "Enter" && addRow()}
           className="flex-1 min-w-0 text-xs bg-transparent border-0 outline-none text-foreground placeholder:text-muted-foreground" />
-        <input type="date" value={newSkill.expiry_date || ""} onChange={e => setNewSkill(s => ({ ...s, expiry_date: e.target.value }))}
+        <input key="new-expiry" type="date" value={newSkill.expiry_date || ""} onChange={e => setNewSkill(s => ({ ...s, expiry_date: e.target.value }))}
           className="text-xs bg-transparent border-0 outline-none text-muted-foreground w-28" />
         <button onClick={addRow}
           className="flex items-center gap-1 px-2.5 py-1.5 bg-primary text-primary-foreground rounded-lg text-[11px] font-bold hover:bg-primary/90 transition-colors shrink-0">
@@ -632,7 +546,7 @@ function SkillRowEditor({
 }
 
 /* ════════════════════════════════════════════════════════════════
-   FORM (New + Edit)
+   FORM (New + Edit)  — right-side slide-in drawer
 ════════════════════════════════════════════════════════════════ */
 interface FormState {
   staff_code: string; resource_name: string;
@@ -641,7 +555,6 @@ interface FormState {
   is_pda_user: boolean;
   phone: string; email: string; user_id: string;
   branch_code: string;
-  supervisor_code: string;
   primary_area_group: string; secondary_area_groups: string;
   is_active: boolean;
   skills: ResourceSkill[];
@@ -656,7 +569,6 @@ const BLANK_FORM: FormState = {
   is_pda_user: false,
   phone: "", email: "", user_id: "",
   branch_code: "",
-  supervisor_code: "",
   primary_area_group: "", secondary_area_groups: "",
   is_active: true,
   skills: [], profile_image: "",
@@ -664,25 +576,24 @@ const BLANK_FORM: FormState = {
 
 function resourceToForm(r: Resource): FormState {
   return {
-    staff_code:            r.staff_code || "",
-    resource_name:         r.resource_name || "",
-    designation:           r.designation || "",
-    department:            r.department || "",
-    employment_type:       r.employment_type || "",
-    ps_type:               r.ps_type || "",
-    shift:                 r.shift || "",
-    allocation_mode:       r.allocation_mode || "",
-    is_pda_user:           r.is_pda_user === 1,
-    phone:                 r.phone || "",
-    email:                 r.email || "",
-    user_id:               r.user_id || "",
-    branch_code:           r.branch_code || "",
-    supervisor_code:       r.supervisor_code || "",
-    primary_area_group:    r.primary_area_group || "",
+    staff_code: r.staff_code || "",
+    resource_name: r.resource_name || "",
+    designation: r.designation || "",
+    department: r.department || "",
+    employment_type: r.employment_type || "",
+    ps_type: r.ps_type || "",
+    shift: r.shift || "",
+    allocation_mode: r.allocation_mode || "",
+    is_pda_user: r.is_pda_user === 1,
+    phone: r.phone || "",
+    email: r.email || "",
+    user_id: r.user_id || "",
+    branch_code: r.branch_code || "",
+    primary_area_group: r.primary_area_group || "",
     secondary_area_groups: r.secondary_area_groups || "",
-    is_active:             r.is_active !== 0,
-    skills:                (r.skills || []).map(s => ({ ...s })),
-    profile_image:         r.profile_image || "",
+    is_active: r.is_active !== 0,
+    skills: (r.skills || []).map(s => ({ ...s })),
+    profile_image: r.profile_image || "",
   };
 }
 
@@ -707,7 +618,7 @@ const FI = React.memo(({ label, fk, val, onUpdate, isDirty, type = "text", place
       {label} {req && <span className="text-destructive">*</span>}
       {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Modified" />}
     </label>
-    <input type={type} value={val} onChange={e => onUpdate(fk, e.target.value)} placeholder={placeholder}
+    <input key={fk} type={type} value={val} onChange={e => onUpdate(fk, e.target.value)} placeholder={placeholder}
       className={`w-full px-3 py-2 border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring transition-all
         ${isDirty ? "border-amber-300 bg-amber-50/30" : "border-border"}`} />
   </div>
@@ -721,7 +632,7 @@ const FS = React.memo(({ label, fk, val, onUpdate, isDirty, opts, req }: {
       {label} {req && <span className="text-destructive">*</span>}
       {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Modified" />}
     </label>
-    <select value={val} onChange={e => onUpdate(fk, e.target.value)}
+    <select key={fk} value={val} onChange={e => onUpdate(fk, e.target.value)}
       className={`w-full px-3 py-2 border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring transition-all
         ${isDirty ? "border-amber-300 bg-amber-50/30" : "border-border"}`}>
       <option value="">Select…</option>
@@ -731,32 +642,23 @@ const FS = React.memo(({ label, fk, val, onUpdate, isDirty, opts, req }: {
 ));
 
 function TechForm({
-  editDoc, onClose, onSaved, lockedBranchCode,
-}: { editDoc?: Resource; onClose: () => void; onSaved: (name: string) => void; lockedBranchCode?: string }) {
+  editDoc, onClose, onSaved,
+}: { editDoc?: Resource; onClose: () => void; onSaved: (name: string) => void }) {
   const isEdit = !!editDoc;
-  const [form, setForm]     = useState<FormState>(() => {
-    const base = editDoc ? resourceToForm(editDoc) : { ...BLANK_FORM };
-    // Pre-fill branch for Branch Manager creating a new technician
-    if (!editDoc && lockedBranchCode) base.branch_code = lockedBranchCode;
-    return base;
-  });
+  const [form, setForm] = useState<FormState>(() => editDoc ? resourceToForm(editDoc) : { ...BLANK_FORM });
   const [saving, setSaving] = useState(false);
-  const [err, setErr]       = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [imgPreview, setImgPreview] = useState<string | null>(
     editDoc?.profile_image
       ? (editDoc.profile_image.startsWith("http") ? editDoc.profile_image : `http://facility.quantcloud.in${editDoc.profile_image}`)
       : null
   );
   const [dirty, setDirty] = useState<Set<string>>(new Set());
-  const fileRef           = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const areaGroups = useSimple<{ name: string; area_group_name?: string }>("Area Group", ["name","area_group_name"]);
-  const branches   = useSimple<{ name: string; branch_code?: string; branch_name?: string }>("Branch", ["name","branch_code","branch_name"]);
-  // Fetch available supervisors for the supervisor dropdown
-  const supervisors = useSimple<{ name: string; resource_name: string }>(
-    "Resource", ["name","resource_name"],
-    [["designation","=","Supervisor"],["is_active","=",1]]
-  );
+  // linked area groups and branches
+  const areaGroups = useSimple<{ name: string; area_group_name?: string }>("Area Group", ["name", "area_group_name"]);
+  const branches = useSimple<{ name: string; branch_code?: string; branch_name?: string }>("Branch", ["name", "branch_code", "branch_name"]);
 
   const updateField = useCallback((k: keyof FormState, v: string | boolean | ResourceSkill[]) => {
     setForm(f => ({ ...f, [k]: v }));
@@ -781,26 +683,25 @@ function TechForm({
 
       const payload: Partial<Resource> = {
         ...(isEdit ? {} : { staff_code: form.staff_code }),
-        resource_name:         form.resource_name || undefined,
-        designation:           form.designation   || undefined,
-        department:            form.department    || undefined,
-        employment_type:       form.employment_type || undefined,
-        ps_type:               form.ps_type       || undefined,
-        shift:                 form.shift         || undefined,
-        allocation_mode:       form.allocation_mode || undefined,
-        is_pda_user:           form.is_pda_user ? 1 : 0,
-        phone:                 form.phone         || undefined,
-        email:                 form.email         || undefined,
-        user_id:               form.user_id       || undefined,
-        branch_code:           form.branch_code   || undefined,
-        supervisor_code:       form.supervisor_code || undefined,
-        primary_area_group:    form.primary_area_group || undefined,
+        resource_name: form.resource_name || undefined,
+        designation: form.designation || undefined,
+        department: form.department || undefined,
+        employment_type: form.employment_type || undefined,
+        ps_type: form.ps_type || undefined,
+        shift: form.shift || undefined,
+        allocation_mode: form.allocation_mode || undefined,
+        is_pda_user: form.is_pda_user ? 1 : 0,
+        phone: form.phone || undefined,
+        email: form.email || undefined,
+        user_id: form.user_id || undefined,
+        branch_code: form.branch_code || undefined,
+        primary_area_group: form.primary_area_group || undefined,
         secondary_area_groups: form.secondary_area_groups || undefined,
-        is_active:             form.is_active ? 1 : 0,
+        is_active: form.is_active ? 1 : 0,
         skills: form.skills.map(s => ({
           service_group_code: s.service_group_code,
-          certification:      s.certification  || undefined,
-          expiry_date:        s.expiry_date    || undefined,
+          certification: s.certification || undefined,
+          expiry_date: s.expiry_date || undefined,
         })),
       };
 
@@ -811,6 +712,7 @@ function TechForm({
         doc = await fCreate<Resource>("Resource", payload);
       }
 
+      // upload photo after doc exists
       if (form._pendingFile) {
         finalImg = await uploadFile(form._pendingFile, "Resource", doc.name, "profile_image");
         await fUpdate("Resource", doc.name, { profile_image: finalImg });
@@ -822,7 +724,6 @@ function TechForm({
   }
 
   const isDirtyAny = dirty.size > 0;
-  const branchLocked = !!lockedBranchCode;
 
   return (
     <div className="fixed inset-0 z-40">
@@ -851,7 +752,7 @@ function TechForm({
           </div>
         </div>
 
-        {/* body */}
+        {/* scrollable body */}
         <div className="flex-1 overflow-y-auto px-5 py-5">
           {err && (
             <div className="flex items-center gap-2 mb-4 px-3 py-2.5 bg-destructive/10 border border-destructive/20 rounded-xl text-sm text-destructive">
@@ -864,7 +765,9 @@ function TechForm({
             <div className="flex items-center gap-4">
               <div className="relative group cursor-pointer" onClick={() => fileRef.current?.click()}>
                 <div className="w-20 h-20 rounded-2xl border-2 border-border overflow-hidden flex items-center justify-center bg-muted/30">
-                  {imgPreview ? <img src={imgPreview} alt="" className="w-full h-full object-cover" /> : <User className="w-8 h-8 text-muted-foreground/40" />}
+                  {imgPreview
+                    ? <img src={imgPreview} alt="" className="w-full h-full object-cover" />
+                    : <User className="w-8 h-8 text-muted-foreground/40" />}
                 </div>
                 <div className="absolute inset-0 bg-black/40 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                   <Camera className="w-5 h-5 text-white" />
@@ -893,9 +796,7 @@ function TechForm({
               <FI label="Staff Code" fk="staff_code" val={form.staff_code} onUpdate={updateField} isDirty={dirty.has("staff_code")} placeholder="RES-001" req />
               <FI label="Resource Name" fk="resource_name" val={form.resource_name} onUpdate={updateField} isDirty={dirty.has("resource_name")} placeholder="Full Name" req />
             </div>
-            {/* Designation now uses Select (matches updated resource.json schema) */}
-            <FS label="Designation" fk="designation" val={form.designation} onUpdate={updateField} isDirty={dirty.has("designation")}
-              opts={DESIGNATIONS.map(v => ({ v, l: v }))} />
+            <FI label="Designation" fk="designation" val={form.designation} onUpdate={updateField} isDirty={dirty.has("designation")} placeholder="e.g. Senior Technician" />
             <div className="grid grid-cols-2 gap-3">
               <FS label="Department" fk="department" val={form.department} onUpdate={updateField} isDirty={dirty.has("department")} opts={DEPARTMENTS.map(v => ({ v, l: v }))} />
               <FS label="Employment Type" fk="employment_type" val={form.employment_type} onUpdate={updateField} isDirty={dirty.has("employment_type")} opts={EMP_TYPES.map(v => ({ v, l: v }))} />
@@ -922,19 +823,14 @@ function TechForm({
             </div>
           </Sec>
 
-          {/* Branch, Supervisor & Coverage */}
-          <Sec title="Branch, Supervisor & Coverage" icon={<MapPin className="w-3.5 h-3.5" />}>
-            {/* Branch — locked for Branch Manager (pre-filled) */}
+          {/* Coverage */}
+          <Sec title="Branch & Area Coverage" icon={<MapPin className="w-3.5 h-3.5" />}>
             <div className="mb-3.5">
               <label className="flex items-center gap-1.5 text-[11px] font-bold text-foreground mb-1">
-                Branch
-                {dirty.has("branch_code") && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Modified" />}
-                {branchLocked && <span className="ml-auto flex items-center gap-1 text-[10px] font-semibold text-muted-foreground"><Lock className="w-3 h-3" />Locked to your branch</span>}
+                Branch {dirty.has("branch_code") && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Modified" />}
               </label>
               <select value={form.branch_code} onChange={e => updateField("branch_code", e.target.value)}
-                disabled={branchLocked}
                 className={`w-full px-3 py-2 border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring transition-all
-                  ${branchLocked ? "opacity-60 cursor-not-allowed bg-muted/30" : ""}
                   ${dirty.has("branch_code") ? "border-amber-300 bg-amber-50/30" : "border-border"}`}>
                 <option value="">Select Branch…</option>
                 {branches.map(b => (
@@ -943,26 +839,6 @@ function TechForm({
               </select>
               <p className="text-[10px] text-muted-foreground mt-1">Assign technician to a specific Branch for visibility and dispatching</p>
             </div>
-
-            {/* Supervisor — only shown when designation is not Supervisor */}
-            {form.designation !== "Supervisor" && (
-              <div className="mb-3.5">
-                <label className="flex items-center gap-1.5 text-[11px] font-bold text-foreground mb-1">
-                  Supervisor
-                  {dirty.has("supervisor_code") && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Modified" />}
-                </label>
-                <select value={form.supervisor_code} onChange={e => updateField("supervisor_code", e.target.value)}
-                  className={`w-full px-3 py-2 border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring transition-all
-                    ${dirty.has("supervisor_code") ? "border-amber-300 bg-amber-50/30" : "border-border"}`}>
-                  <option value="">No Supervisor</option>
-                  {supervisors.map(s => (
-                    <option key={s.name} value={s.name}>{s.resource_name} ({s.name})</option>
-                  ))}
-                </select>
-                <p className="text-[10px] text-muted-foreground mt-1">When a Supervisor logs in, they will see this technician's work orders</p>
-              </div>
-            )}
-
             <FS label="Primary Area Group" fk="primary_area_group" val={form.primary_area_group} onUpdate={updateField} isDirty={dirty.has("primary_area_group")}
               opts={areaGroups.map(a => ({ v: a.name, l: a.area_group_name || a.name }))} />
             <FI label="Secondary Area Groups" fk="secondary_area_groups" val={form.secondary_area_groups} onUpdate={updateField} isDirty={dirty.has("secondary_area_groups")} placeholder="Comma-separated area group codes" />
@@ -994,35 +870,6 @@ function TechForm({
             </div>
           </Sec>
 
-          {/* Supervised Technicians - only for supervisors */}
-          {form.designation === "Supervisor" && (
-            <Sec title="Supervised Technicians" icon={<Users className="w-3.5 h-3.5" />}>
-              <div className="mb-3">
-                <p className="text-xs text-muted-foreground">
-                  Technicians will be automatically populated when you save this supervisor record based on their supervisor_code field.
-                </p>
-              </div>
-              {isEdit && (
-                <div className="p-3 bg-muted/20 rounded-xl border border-border/50">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Users className="w-4 h-4 text-primary" />
-                    <span className="text-sm font-semibold text-foreground">Auto-fill Information</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    This section will automatically show all technicians who have this supervisor assigned to them.
-                    The list is populated based on the supervisor_code field in technician records.
-                  </p>
-                  <div className="mt-3 flex items-center gap-2">
-                    <RefreshCw className="w-3 h-3 text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground">
-                      Save the record to see supervised technicians, or refresh after editing technician assignments.
-                    </span>
-                  </div>
-                </div>
-              )}
-            </Sec>
-          )}
-
           {/* Skills */}
           <Sec title="Skills & Certifications" icon={<Award className="w-3.5 h-3.5" />}>
             <SkillRowEditor skills={form.skills} onChange={v => updateField("skills", v)} />
@@ -1031,12 +878,15 @@ function TechForm({
 
         {/* footer */}
         <div className="shrink-0 border-t border-border px-5 py-4 bg-card flex items-center gap-3">
-          <button onClick={onClose} className="flex-1 py-2.5 border border-border rounded-xl text-sm font-semibold text-foreground hover:bg-muted transition-colors">Cancel</button>
+          <button onClick={onClose}
+            className="flex-1 py-2.5 border border-border rounded-xl text-sm font-semibold text-foreground hover:bg-muted transition-colors">
+            Cancel
+          </button>
           <button onClick={handleSave} disabled={saving || (!isDirtyAny && isEdit)}
             className="flex-1 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-bold hover:bg-primary/90 transition-all flex items-center justify-center gap-2 disabled:opacity-50">
             {saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
               : isEdit ? <><CheckCircle2 className="w-4 h-4" />Save Changes</>
-              : <><Plus className="w-4 h-4" />Create Technician</>}
+                : <><Plus className="w-4 h-4" />Create Technician</>}
           </button>
         </div>
       </div>
@@ -1045,28 +895,20 @@ function TechForm({
 }
 
 /* ════════════════════════════════════════════════════════════════
-   PROFILE  (right panel)
+   PROFILE  (right panel detail view)
 ════════════════════════════════════════════════════════════════ */
 function Profile({
-  techName, onEdit, onDeleted, onRefresh, canEdit, canDelete, onTechnicianSelect,
-}: {
-  techName: string; onEdit: (doc: Resource) => void; onDeleted: () => void; onRefresh: () => void;
-  /** Whether the current user can edit this record (false for Technician + Supervisor) */
-  canEdit: boolean;
-  /** Whether the current user can delete this record */
-  canDelete: boolean;
-  /** Callback for when a supervised technician is selected */
-  onTechnicianSelect?: (technicianName: string) => void;
-}) {
+  techName, onEdit, onDeleted, onRefresh,
+}: { techName: string; onEdit: (doc: Resource) => void; onDeleted: () => void; onRefresh: () => void }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const { data: t, loading, error } = useDoc(techName, refreshKey);
-  const [deleting, setDeleting]     = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [showDelConfirm, setShowDelConfirm] = useState(false);
-  
-  // Fetch supervised technicians if this is a supervisor
-  const { data: supervisedTechs, loading: loadingSupervised, error: supervisedError } = useSupervisedTechnicians(t?.designation === "Supervisor" ? t.staff_code : undefined);
 
-  useEffect(() => { setRefreshKey(k => k + 1); }, [techName]);
+  // expose refresh to parent via a custom event (simple approach)
+  useEffect(() => {
+    setRefreshKey(k => k + 1);
+  }, [techName]);
 
   async function handleDelete() {
     setDeleting(true);
@@ -1076,11 +918,11 @@ function Profile({
   }
 
   if (loading) return <Spin />;
-  if (error)   return <ErrMsg msg={error} onRetry={() => setRefreshKey(k => k + 1)} />;
-  if (!t)      return null;
+  if (error) return <ErrMsg msg={error} onRetry={() => setRefreshKey(k => k + 1)} />;
+  if (!t) return null;
 
-  const deptCfg       = DEPT_CFG[t.department  || ""] || { color: "#6b7280", bg: "#f9fafb", icon: null };
-  const expiredSkills  = (t.skills || []).filter(s => isCertExpired(s.expiry_date));
+  const deptCfg = DEPT_CFG[t.department || ""] || { color: "#6b7280", bg: "#f9fafb", icon: null };
+  const expiredSkills = (t.skills || []).filter(s => isCertExpired(s.expiry_date));
   const expiringSkills = (t.skills || []).filter(s => isCertExpiringSoon(s.expiry_date) && !isCertExpired(s.expiry_date));
 
   const InfoRow = React.memo(({ label, val, icon, mono, link }: {
@@ -1120,10 +962,12 @@ function Profile({
 
   return (
     <div className="t-fade-up overflow-y-auto h-full">
-      {/* HERO HEADER */}
+      {/* ── HERO HEADER ── */}
       <div className="sticky top-0 z-10 px-6 pt-6 pb-5 border-b border-border/60 bg-card/95 backdrop-blur-md"
         style={{ background: `linear-gradient(135deg, ${deptCfg.bg} 0%, transparent 80%)` }}>
+
         <div className="flex items-start gap-4 mb-4">
+          {/* Avatar */}
           <div className="relative shrink-0">
             <Avatar name={t.resource_name} img={t.profile_image} size="xl" ring />
             <div className="absolute bottom-0 right-0 w-5 h-5 rounded-full border-2 border-white flex items-center justify-center"
@@ -1131,33 +975,27 @@ function Profile({
               {t.is_active ? <Check className="w-2.5 h-2.5 text-white" /> : <X className="w-2.5 h-2.5 text-white" />}
             </div>
           </div>
+
+          {/* Identity */}
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-lg font-bold text-foreground leading-tight">{t.resource_name}</h2>
                 <p className="text-[12px] font-mono text-muted-foreground mt-0.5">{t.staff_code}</p>
                 {t.designation && <p className="text-sm text-muted-foreground mt-1">{t.designation}</p>}
-                {t.supervisor_name && (
-                  <p className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1">
-                    <UserCheck className="w-3 h-3" /> Supervisor: <span className="font-semibold">{t.supervisor_name}</span>
-                  </p>
-                )}
               </div>
-              {/* Action buttons — hidden for read-only roles */}
+              {/* actions */}
               <div className="flex items-center gap-2 shrink-0">
-                {canEdit && (
-                  <button onClick={() => onEdit(t)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-primary/30 rounded-lg text-primary hover:bg-primary hover:text-primary-foreground transition-all">
-                    <Pencil className="w-3 h-3" /> Edit
-                  </button>
-                )}
-                {canDelete && (
-                  <button onClick={() => setShowDelConfirm(true)}
-                    className="p-1.5 rounded-lg hover:bg-red-50 hover:text-red-500 transition-colors">
-                    <Trash2 className="w-4 h-4 text-muted-foreground" />
-                  </button>
-                )}
-                <button onClick={() => setRefreshKey(k => k + 1)} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
+                <button onClick={() => onEdit(t)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-primary/30 rounded-lg text-primary hover:bg-primary hover:text-primary-foreground transition-all">
+                  <Pencil className="w-3 h-3" /> Edit
+                </button>
+                <button onClick={() => setShowDelConfirm(true)}
+                  className="p-1.5 rounded-lg hover:bg-red-50 hover:text-red-500 transition-colors">
+                  <Trash2 className="w-4 h-4 text-muted-foreground" />
+                </button>
+                <button onClick={() => setRefreshKey(k => k + 1)}
+                  className="p-1.5 rounded-lg hover:bg-muted transition-colors">
                   <RefreshCw className="w-4 h-4 text-muted-foreground" />
                 </button>
               </div>
@@ -1177,7 +1015,7 @@ function Profile({
             </span>
           )}
           <DeptBadge dept={t.department} />
-          <EmpBadge  type={t.employment_type} />
+          <EmpBadge type={t.employment_type} />
           {t.ps_type && (
             <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-700 border border-sky-200">{t.ps_type}</span>
           )}
@@ -1188,7 +1026,7 @@ function Profile({
           )}
           {expiredSkills.length > 0 && (
             <span className="flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-700 border border-red-200">
-              <AlertTriangle className="w-3 h-3" /> {expiredSkills.length} Cert{expiredSkills.length>1?"s":""} Expired
+              <AlertTriangle className="w-3 h-3" /> {expiredSkills.length} Cert{expiredSkills.length > 1 ? "s" : ""} Expired
             </span>
           )}
           {expiringSkills.length > 0 && (
@@ -1199,68 +1037,17 @@ function Profile({
         </div>
       </div>
 
-      {/* CARDS */}
+      {/* ── CARDS ── */}
       <div className="px-6 py-5">
+
+        {/* Skills & Certs — featured first */}
         {(t.skills || []).length > 0 && (
           <Card title={`Skills & Certifications (${t.skills!.length})`} icon={<Award className="w-4 h-4" />} accent="#6366f1">
             <div className="grid grid-cols-1 gap-2 py-2">
-              {(t.skills || []).map((sk, i) => <SkillPill key={sk.name || i} skill={sk} />)}
+              {(t.skills || []).map((sk, i) => (
+                <SkillPill key={sk.name || i} skill={sk} />
+              ))}
             </div>
-          </Card>
-        )}
-        {/* Supervised Technicians Section - only for supervisors */}
-        {t.designation === "Supervisor" && (
-          <Card title={`Supervised Technicians (${supervisedTechs.length})`} icon={<Users className="w-4 h-4" />} accent="#10b981">
-            {loadingSupervised ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-                <span className="ml-2 text-sm text-muted-foreground">Loading supervised technicians...</span>
-              </div>
-            ) : supervisedError ? (
-              <div className="flex items-center gap-2 p-3 bg-destructive/10 border border-destructive/20 rounded-xl text-sm text-destructive">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>Failed to load supervised technicians</span>
-              </div>
-            ) : supervisedTechs.length === 0 ? (
-              <div className="flex items-center gap-3 p-4 bg-muted/30 border border-dashed border-border rounded-2xl">
-                <Users className="w-6 h-6 text-muted-foreground/40" />
-                <div>
-                  <p className="text-sm font-semibold text-muted-foreground">No supervised technicians</p>
-                  <p className="text-xs text-muted-foreground/60">
-                    {canEdit ? "No technicians have been assigned to this supervisor yet." : "No technicians are currently assigned to this supervisor."}
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-2 py-2">
-                {supervisedTechs.map((tech) => (
-                  <button
-                    key={tech.name}
-                    onClick={() => onTechnicianSelect?.(tech.name)}
-                    className="w-full flex items-center gap-3 p-3 bg-muted/20 rounded-xl border border-border/50 hover:bg-muted/30 hover:border-primary/30 transition-all text-left group"
-                  >
-                    <Avatar name={tech.resource_name} img={tech.profile_image} size="sm" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-foreground truncate group-hover:text-primary transition-colors">{tech.resource_name}</p>
-                      <p className="text-[11px] text-muted-foreground font-mono">{tech.staff_code}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        {tech.designation && <span className="text-[10px] text-muted-foreground">{tech.designation}</span>}
-                        {tech.department && <DeptBadge dept={tech.department} />}
-                        <ActiveDot active={tech.is_active} />
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {tech.phone && (
-                        <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                          <Phone className="w-2.5 h-2.5" /> {tech.phone}
-                        </span>
-                      )}
-                      <ChevronRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-primary transition-colors" />
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
           </Card>
         )}
 
@@ -1269,64 +1056,71 @@ function Profile({
             <BookOpen className="w-6 h-6 text-muted-foreground/40" />
             <div>
               <p className="text-sm font-semibold text-muted-foreground">No skills recorded</p>
-              <p className="text-xs text-muted-foreground/60">{canEdit ? "Click Edit to add certifications." : "No certifications recorded yet."}</p>
+              <p className="text-xs text-muted-foreground/60">Click Edit to add certifications and service group skills.</p>
             </div>
           </div>
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6">
+          {/* Personal */}
           <div>
             <Card title="Personal Details" icon={<User className="w-4 h-4" />} accent="#3b82f6">
-              <InfoRow label="Staff Code"  val={t.staff_code}   mono />
-              <InfoRow label="Designation" val={t.designation}  />
-              <InfoRow label="Department"  val={t.department}   icon={<Building2 className="w-3.5 h-3.5" />} />
-              <InfoRow label="Emp. Type"   val={t.employment_type} />
-              <InfoRow label="P/S Type"    val={t.ps_type}      />
-              <InfoRow label="Supervisor"  val={t.supervisor_name || t.supervisor_code} icon={<UserCheck className="w-3.5 h-3.5" />} />
+              <InfoRow label="Staff Code" val={t.staff_code} mono />
+              <InfoRow label="Designation" val={t.designation} />
+              <InfoRow label="Department" val={t.department} icon={<Building2 className="w-3.5 h-3.5" />} />
+              <InfoRow label="Emp. Type" val={t.employment_type} />
+              <InfoRow label="P/S Type" val={t.ps_type} />
             </Card>
           </div>
+
+          {/* Operations */}
           <div>
             <Card title="Operations" icon={<Layers className="w-4 h-4" />} accent="#10b981">
-              <InfoRow label="Shift"           val={t.shift}          icon={<Clock className="w-3.5 h-3.5" />} />
-              <InfoRow label="Allocation"      val={t.allocation_mode} />
-              <InfoRow label="Area Group"      val={t.primary_area_group} icon={<MapPin className="w-3.5 h-3.5" />} />
+              <InfoRow label="Shift" val={t.shift} icon={<Clock className="w-3.5 h-3.5" />} />
+              <InfoRow label="Allocation" val={t.allocation_mode} />
+              <InfoRow label="Area Group" val={t.primary_area_group} icon={<MapPin className="w-3.5 h-3.5" />} />
               <InfoRow label="Secondary Areas" val={t.secondary_area_groups} />
-              <InfoRow label="Mobile/PDA"      val={t.is_pda_user ? "Yes" : "No"} />
+              <InfoRow label="Mobile/PDA" val={t.is_pda_user ? "Yes" : "No"} />
             </Card>
           </div>
+
+          {/* Contact */}
           <div>
             <Card title="Contact" icon={<Phone className="w-4 h-4" />} accent="#f59e0b">
-              <InfoRow label="Phone"       val={t.phone}   icon={<Phone className="w-3.5 h-3.5" />} link />
-              <InfoRow label="Email"       val={t.email}   icon={<Mail  className="w-3.5 h-3.5" />} link />
+              <InfoRow label="Phone" val={t.phone} icon={<Phone className="w-3.5 h-3.5" />} link />
+              <InfoRow label="Email" val={t.email} icon={<Mail className="w-3.5 h-3.5" />} link />
               <InfoRow label="System User" val={t.user_id} />
             </Card>
           </div>
+
+          {/* Compliance summary */}
           <div>
             <Card title="Certification Health" icon={<Shield className="w-4 h-4" />} accent="#8b5cf6">
               <div className="py-2 space-y-3">
                 {[
-                  { label: "Total Skills",   val: (t.skills||[]).length,                                                                               color: "#6366f1" },
-                  { label: "Valid Certs",     val: (t.skills||[]).filter(s => s.expiry_date && !isCertExpired(s.expiry_date)).length,                   color: "#10b981" },
-                  { label: "Expiring Soon",   val: expiringSkills.length,                                                                              color: "#f59e0b" },
-                  { label: "Expired",         val: expiredSkills.length,                                                                               color: "#ef4444" },
+                  { label: "Total Skills", val: (t.skills || []).length, color: "#6366f1" },
+                  { label: "Valid Certs", val: (t.skills || []).filter(s => s.expiry_date && !isCertExpired(s.expiry_date)).length, color: "#10b981" },
+                  { label: "Expiring Soon", val: expiringSkills.length, color: "#f59e0b" },
+                  { label: "Expired", val: expiredSkills.length, color: "#ef4444" },
                 ].map(({ label, val, color }) => (
                   <div key={label} className="flex items-center justify-between group py-0.5">
                     <span className="text-xs text-muted-foreground/80 font-medium group-hover:text-foreground transition-colors">{label}</span>
                     <span className="text-sm font-black transition-transform group-hover:scale-110" style={{ color }}>{val}</span>
                   </div>
                 ))}
-                {(t.skills||[]).length > 0 && (
+                {/* health bar */}
+                {(t.skills || []).length > 0 && (
                   <div className="pt-1">
                     <div className="h-2 bg-muted rounded-full overflow-hidden">
                       <div className="prog-bar h-full rounded-full"
                         style={{
-                          "--tw": `${Math.round(((t.skills||[]).length - expiredSkills.length) / (t.skills||[]).length * 100)}%`,
-                          width: `${Math.round(((t.skills||[]).length - expiredSkills.length) / (t.skills||[]).length * 100)}%`,
+                          "--tw": `${Math.round(((t.skills || []).length - expiredSkills.length) / (t.skills || []).length * 100)}%`,
+                          width: `${Math.round(((t.skills || []).length - expiredSkills.length) / (t.skills || []).length * 100)}%`,
                           background: expiredSkills.length > 0 ? "#f59e0b" : "#10b981",
                         } as React.CSSProperties} />
                     </div>
                     <p className="text-[10px] text-muted-foreground mt-1">
-                      {Math.round(((t.skills||[]).length - expiredSkills.length) / (t.skills||[]).length * 100)}% certs valid
+                      {Math.round(((t.skills || []).length - expiredSkills.length) / (t.skills || []).length * 100)}% certs valid
                     </p>
                   </div>
                 )}
@@ -1345,11 +1139,13 @@ function Profile({
             </div>
             <h3 className="text-base font-bold text-foreground mb-1">Delete Technician?</h3>
             <p className="text-sm text-muted-foreground mb-5">
-              <strong>{t.resource_name}</strong> ({t.staff_code}) will be permanently removed.
+              <strong>{t.resource_name}</strong> ({t.staff_code}) will be permanently removed from Frappe.
             </p>
             <div className="flex gap-3">
               <button onClick={() => setShowDelConfirm(false)}
-                className="flex-1 py-2.5 border border-border rounded-xl text-sm font-semibold text-foreground hover:bg-muted transition-colors">Cancel</button>
+                className="flex-1 py-2.5 border border-border rounded-xl text-sm font-semibold text-foreground hover:bg-muted transition-colors">
+                Cancel
+              </button>
               <button onClick={handleDelete} disabled={deleting}
                 className="flex-1 py-2.5 bg-red-500 text-white rounded-xl text-sm font-bold hover:bg-red-600 transition-colors flex items-center justify-center gap-2 disabled:opacity-60">
                 {deleting ? <><Loader2 className="w-4 h-4 animate-spin" />Deleting…</> : <><Trash2 className="w-4 h-4" />Delete</>}
@@ -1365,8 +1161,8 @@ function Profile({
 /* ════════════════════════════════════════════════════════════════
    FILTER DROPDOWN
 ════════════════════════════════════════════════════════════════ */
-interface FilterDropProps { label: string; icon: React.ReactNode; opts: string[]; val: string; onChange: (v: string) => void; disabled?: boolean; }
-function FilterDrop({ label, icon, opts, val, onChange, disabled }: FilterDropProps) {
+interface FilterDropProps { label: string; icon: React.ReactNode; opts: string[]; val: string; onChange: (v: string) => void; }
+function FilterDrop({ label, icon, opts, val, onChange }: FilterDropProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1378,18 +1174,16 @@ function FilterDrop({ label, icon, opts, val, onChange, disabled }: FilterDropPr
 
   return (
     <div ref={ref} className="relative">
-      <button onClick={() => !disabled && setOpen(v => !v)}
-        disabled={disabled}
+      <button onClick={() => setOpen(v => !v)}
         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[11px] font-semibold transition-all
-          ${disabled ? "opacity-50 cursor-not-allowed border-border text-muted-foreground" :
-            val ? "border-primary bg-primary/5 text-primary" : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
+          ${val ? "border-primary bg-primary/5 text-primary" : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
         {icon}
         {val || label}
-        {val && !disabled
+        {val
           ? <button onClick={e => { e.stopPropagation(); onChange(""); setOpen(false); }} className="ml-0.5"><X className="w-2.5 h-2.5" /></button>
           : <ChevronDown className="w-3 h-3" />}
       </button>
-      {open && !disabled && (
+      {open && (
         <div className="absolute top-full left-0 mt-1.5 z-50 bg-card border border-border rounded-xl shadow-xl min-w-[160px] t-scale-in overflow-hidden">
           <div className="py-1">
             <button onClick={() => { onChange(""); setOpen(false); }}
@@ -1418,66 +1212,31 @@ function FilterDrop({ label, icon, opts, val, onChange, disabled }: FilterDropPr
 export default function Technicians() {
   useTechStyles();
 
-  // ── Scope ──────────────────────────────────────────────────────────────────
-  const { scope, canDo, canEdit: canEditModule } = usePermissions();
-  const { scopeRole, isResolved, hasLink, raw: userScope } = scope;
-
-  /**
-   * Build Frappe filters for the Resource list.
-   * Block fetch with no-match filter until scope resolves (prevents data flash).
-   *
-   * Technician    → [["name","=","TECH-001"]]          — only self
-   * Supervisor    → [["name","in","T1,T2,T3"]]         — supervised team
-   * Branch Manager→ [["branch_code","=","BR-01"]]      — whole branch
-   * Admin         → []                                  — all records
-   */
-  const scopeFilters: FF = useMemo(() => {
-    if (!isResolved) return [["name", "=", "__scope_loading__"]];
-    return scope.filtersFor("Resource") as FF;
-  }, [isResolved, scope]);
-
-  // Permissions derived from scope role
-  const isReadOnly   = scopeRole === "Technician" || scopeRole === "Supervisor";
-  const canCreateTech = !isReadOnly && canDo("hr"); // Branch Manager + Admin only
-  const canEditTech   = !isReadOnly;
-  const canDeleteTech = scopeRole === "Admin";
-
-  // Branch Manager: lock new technicians to their branch
-  const lockedBranchCode = scopeRole === "Branch Manager" ? userScope.branchCode : undefined;
-
-  // ── Data ───────────────────────────────────────────────────────────────────
   const [refreshKey, setRefreshKey] = useState(0);
-  const { data: all, loading, error, refetch } = useList(
-    scopeFilters,
-    [refreshKey, isResolved, JSON.stringify(scopeFilters)]
-  );
+  const { data: all, loading, error, refetch } = useList([refreshKey]);
 
-  // ── UI State ───────────────────────────────────────────────────────────────
-  const [selected,     setSelected]     = useState<string | null>(null);
-  const [showForm,     setShowForm]     = useState(false);
-  const [editDoc,      setEditDoc]      = useState<Resource | undefined>(undefined);
-  const [search,       setSearch]       = useState("");
-  const [filterDept,   setFilterDept]   = useState("");
-  const [filterEmp,    setFilterEmp]    = useState("");
-  const [filterShift,  setFilterShift]  = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editDoc, setEditDoc] = useState<Resource | undefined>(undefined);
+  const [search, setSearch] = useState("");
+  const [filterDept, setFilterDept] = useState("");
+  const [filterEmp, setFilterEmp] = useState("");
+  const [filterShift, setFilterShift] = useState("");
   const [filterActive, setFilterActive] = useState("");
   const [filterBranch, setFilterBranch] = useState("");
 
-  // Branch filter is locked for non-admins (data already scoped at API level)
-  const branchFilterLocked = scopeRole !== "Admin";
-
   // derive filter options from live data
-  const deptOpts   = useMemo(() => [...new Set(all.map(t => t.department).filter(Boolean) as string[])].sort(), [all]);
-  const empOpts    = useMemo(() => [...new Set(all.map(t => t.employment_type).filter(Boolean) as string[])].sort(), [all]);
-  const shiftOpts  = useMemo(() => [...new Set(all.map(t => t.shift).filter(Boolean) as string[])].sort(), [all]);
+  const deptOpts = useMemo(() => [...new Set(all.map(t => t.department).filter(Boolean) as string[])].sort(), [all]);
+  const empOpts = useMemo(() => [...new Set(all.map(t => t.employment_type).filter(Boolean) as string[])].sort(), [all]);
+  const shiftOpts = useMemo(() => [...new Set(all.map(t => t.shift).filter(Boolean) as string[])].sort(), [all]);
   const branchOpts = useMemo(() => [...new Set(all.map(t => t.branch_name || t.branch_code).filter(Boolean) as string[])].sort(), [all]);
 
   const filtered = useMemo(() => all.filter(t => {
-    if (filterDept   && t.department     !== filterDept)    return false;
-    if (filterEmp    && t.employment_type !== filterEmp)    return false;
-    if (filterShift  && t.shift          !== filterShift)   return false;
-    if (filterActive === "Active"   && !t.is_active)        return false;
-    if (filterActive === "Inactive" &&  t.is_active)        return false;
+    if (filterDept && t.department !== filterDept) return false;
+    if (filterEmp && t.employment_type !== filterEmp) return false;
+    if (filterShift && t.shift !== filterShift) return false;
+    if (filterActive === "Active" && !t.is_active) return false;
+    if (filterActive === "Inactive" && t.is_active) return false;
     if (filterBranch && (t.branch_name || t.branch_code) !== filterBranch) return false;
     if (!search) return true;
     const q = search.toLowerCase();
@@ -1490,36 +1249,26 @@ export default function Technicians() {
 
   const activeFilters = [filterDept, filterEmp, filterShift, filterActive, filterBranch].filter(Boolean).length;
 
+  // auto-select first on load
   useEffect(() => {
     if (filtered.length > 0 && !selected && !showForm) setSelected(filtered[0].name);
   }, [filtered, selected, showForm]);
 
-  function openAdd()  { setEditDoc(undefined); setShowForm(true); setSelected(null); }
+  function openAdd() { setEditDoc(undefined); setShowForm(true); setSelected(null); }
   function openEdit(doc: Resource) { setEditDoc(doc); setShowForm(true); }
-  function handleSaved(name: string) { setShowForm(false); setEditDoc(undefined); setSelected(name); setRefreshKey(k => k + 1); }
-  function handleDeleted() { setSelected(null); setRefreshKey(k => k + 1); }
-  function clearAllFilters() { setFilterDept(""); setFilterEmp(""); setFilterShift(""); setFilterActive(""); setFilterBranch(""); }
-
-  // Scope loading guard
-  if (!isResolved) {
-    return (
-      <div className="flex items-center justify-center h-full gap-3 text-muted-foreground">
-        <Loader2 className="w-5 h-5 animate-spin text-primary" />
-        <span className="text-sm">Resolving access scope…</span>
-      </div>
-    );
+  function handleSaved(name: string) {
+    setShowForm(false); setEditDoc(undefined);
+    setSelected(name);
+    setRefreshKey(k => k + 1);
   }
+  function handleDeleted() {
+    setSelected(null);
+    setRefreshKey(k => k + 1);
+  }
+  function clearAllFilters() { setFilterDept(""); setFilterEmp(""); setFilterShift(""); setFilterActive(""); setFilterBranch(""); }
 
   return (
     <div className="flex flex-col h-full bg-background" style={{ fontFamily: "Inter, sans-serif" }}>
-
-      {/* ── SCOPE BANNER ── */}
-      <ScopeBanner
-        scopeRole={scopeRole}
-        resourceName={userScope.resourceName}
-        totalVisible={all.length}
-        hasLink={hasLink}
-      />
 
       {/* ── TOP BAR ── */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-card shadow-sm shrink-0 relative z-40">
@@ -1530,12 +1279,7 @@ export default function Technicians() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-foreground leading-tight">Technicians</h1>
-              <p className="text-[10px] text-muted-foreground">
-                {scopeRole === "Admin" ? "Resource Management" :
-                  scopeRole === "Supervisor" ? `Your Team · ${all.length} member${all.length !== 1 ? "s" : ""}` :
-                  scopeRole === "Branch Manager" ? `${userScope.resourceName || "Your Branch"}` :
-                  "My Profile"}
-              </p>
+              <p className="text-[10px] text-muted-foreground">Resource Management</p>
             </div>
           </div>
 
@@ -1548,12 +1292,11 @@ export default function Technicians() {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Branch filter: disabled for non-admins since data is already scoped */}
-            <FilterDrop label="Branch"     icon={<Building2 className="w-3 h-3" />} opts={branchOpts} val={filterBranch} onChange={setFilterBranch} disabled={branchFilterLocked} />
-            <FilterDrop label="Department" icon={<Building2 className="w-3 h-3" />} opts={deptOpts}   val={filterDept}   onChange={setFilterDept} />
-            <FilterDrop label="Emp. Type"  icon={<Tag className="w-3 h-3" />}       opts={empOpts}    val={filterEmp}    onChange={setFilterEmp}  />
-            <FilterDrop label="Shift"      icon={<Clock className="w-3 h-3" />}     opts={shiftOpts}  val={filterShift}  onChange={setFilterShift}/>
-            <FilterDrop label="Status"     icon={<Activity className="w-3 h-3" />}  opts={["Active","Inactive"]} val={filterActive} onChange={setFilterActive} />
+            <FilterDrop label="Branch" icon={<Building2 className="w-3 h-3" />} opts={branchOpts} val={filterBranch} onChange={setFilterBranch} />
+            <FilterDrop label="Department" icon={<Building2 className="w-3 h-3" />} opts={deptOpts} val={filterDept} onChange={setFilterDept} />
+            <FilterDrop label="Emp. Type" icon={<Tag className="w-3 h-3" />} opts={empOpts} val={filterEmp} onChange={setFilterEmp} />
+            <FilterDrop label="Shift" icon={<Clock className="w-3 h-3" />} opts={shiftOpts} val={filterShift} onChange={setFilterShift} />
+            <FilterDrop label="Status" icon={<Activity className="w-3 h-3" />} opts={["Active", "Inactive"]} val={filterActive} onChange={setFilterActive} />
             {activeFilters > 0 && (
               <button onClick={clearAllFilters}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[11px] font-semibold text-destructive border border-destructive/30 bg-destructive/5 hover:bg-destructive/10 transition-all">
@@ -1567,13 +1310,10 @@ export default function Technicians() {
           <button onClick={refetch} className="p-2 rounded-lg hover:bg-muted transition-colors">
             <RefreshCw className={`w-4 h-4 text-muted-foreground ${loading ? "animate-spin" : ""}`} />
           </button>
-          {/* Add Technician: only visible to Branch Manager and Admin */}
-          {canCreateTech && (
-            <button onClick={openAdd}
-              className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-all shadow-sm">
-              <Plus className="w-4 h-4" /> Add Technician
-            </button>
-          )}
+          <button onClick={openAdd}
+            className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:bg-primary/90 transition-all shadow-sm">
+            <Plus className="w-4 h-4" /> Add Technician
+          </button>
         </div>
       </div>
 
@@ -1585,35 +1325,28 @@ export default function Technicians() {
 
         {/* LEFT: list */}
         <div className="w-[380px] min-w-[380px] border-r border-border flex flex-col bg-card overflow-hidden">
+          {/* count strip */}
           <div className="px-4 py-2 border-b border-border/50 bg-muted/20 flex items-center justify-between">
             <span className="text-[11px] font-bold text-muted-foreground">
               {filtered.length} of {all.length} technician{all.length !== 1 ? "s" : ""}
             </span>
             {activeFilters > 0 && (
               <span className="text-[11px] text-primary font-semibold flex items-center gap-1">
-                <Filter className="w-3 h-3" /> {activeFilters} filter{activeFilters>1?"s":""} active
+                <Filter className="w-3 h-3" /> {activeFilters} filter{activeFilters > 1 ? "s" : ""} active
               </span>
             )}
           </div>
 
           <div className="flex-1 overflow-y-auto">
             {loading && <Spin />}
-            {error   && <ErrMsg msg={error} onRetry={refetch} />}
+            {error && <ErrMsg msg={error} onRetry={refetch} />}
             {!loading && !error && filtered.length === 0 && (
               <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground t-fade-up">
                 <div className="w-14 h-14 rounded-2xl bg-muted/50 flex items-center justify-center">
                   <Users className="w-7 h-7 opacity-40" />
                 </div>
-                <p className="text-sm font-semibold">
-                  {scopeRole === "Supervisor" && all.length === 0
-                    ? "No technicians linked to you"
-                    : "No technicians found"}
-                </p>
-                <p className="text-xs opacity-60">
-                  {scopeRole === "Supervisor" && all.length === 0
-                    ? "Ask admin to set your staff code as supervisor_code on each technician's Resource record"
-                    : "Adjust your search or filters"}
-                </p>
+                <p className="text-sm font-semibold">No technicians found</p>
+                <p className="text-xs opacity-60">Adjust your search or filters</p>
               </div>
             )}
             {!loading && !error && filtered.map(t => (
@@ -1627,6 +1360,7 @@ export default function Technicians() {
         {/* RIGHT: profile */}
         <div className="flex-1 overflow-hidden bg-background">
           {showForm ? (
+            /* Full-page new form placeholder while drawer is open — blur existing profile */
             <div className="h-full flex items-center justify-center text-muted-foreground bg-muted/10">
               <div className="text-center">
                 <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-3">
@@ -1637,20 +1371,10 @@ export default function Technicians() {
               </div>
             </div>
           ) : selected ? (
-            <Profile
-              techName={selected}
+            <Profile techName={selected}
               onEdit={openEdit}
               onDeleted={handleDeleted}
-              onRefresh={() => setRefreshKey(k => k + 1)}
-              canEdit={canEditTech}
-              canDelete={canDeleteTech}
-              onTechnicianSelect={(technicianName) => {
-                // When a supervised technician is clicked, select that technician
-                setSelected(technicianName);
-                setShowForm(false);
-                setEditDoc(undefined);
-              }}
-            />
+              onRefresh={() => setRefreshKey(k => k + 1)} />
           ) : (
             <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground t-fade-up">
               <div className="relative">
@@ -1665,12 +1389,10 @@ export default function Technicians() {
                 <p className="text-sm font-semibold text-foreground/70">Select a technician</p>
                 <p className="text-xs opacity-50 mt-1">Click any card to view their full profile</p>
               </div>
-              {canCreateTech && (
-                <button onClick={openAdd}
-                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:bg-primary/90 transition-all shadow-sm mt-2">
-                  <Plus className="w-4 h-4" /> Add First Technician
-                </button>
-              )}
+              <button onClick={openAdd}
+                className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:bg-primary/90 transition-all shadow-sm mt-2">
+                <Plus className="w-4 h-4" /> Add First Technician
+              </button>
             </div>
           )}
         </div>
@@ -1682,7 +1404,6 @@ export default function Technicians() {
           editDoc={editDoc}
           onClose={() => { setShowForm(false); setEditDoc(undefined); }}
           onSaved={handleSaved}
-          lockedBranchCode={lockedBranchCode}
         />
       )}
     </div>
